@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.chargeops.mapper.ChargePackageMapper">
+
+    <sql id="Base_Column_List">
+        id, name, category_id, package_type, station_id, price, origin_price,
+        energy_kwh, duration_minutes, times, service_discount,
+        valid_days, description, image, status, sort,
+        create_time, update_time, create_user, update_user
+    </sql>
+
+    <select id="getById" resultType="com.chargeops.entity.ChargePackage">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM charge_package
+        WHERE id = #{id}
+    </select>
+
+    <!--
+      新增。
+
+      ★ 四个类型专属列<b>都写进来</b>，因为创建时它们的值由调用方决定
+        （没用到的那三个必须是 null，而不是「跳过」—— 这是 insert，
+        没有「旧值」可言，写 null 就是真的 null）。
+
+      ★ 服务费折扣是 decimal(5,4)，0.8000 表示八折。
+        传 0.8 进去 MySQL 会补成 0.8000，读回来 scale 是 4。
+    -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO charge_package (name, category_id, package_type, station_id, price, origin_price,
+                                    energy_kwh, duration_minutes, times, service_discount,
+                                    valid_days, description, image, status, sort,
+                                    create_time, update_time, create_user, update_user)
+        VALUES (#{name}, #{categoryId}, #{packageType}, #{stationId}, #{price}, #{originPrice},
+                #{energyKwh}, #{durationMinutes}, #{times}, #{serviceDiscount},
+                #{validDays}, #{description}, #{image}, #{status}, #{sort},
+                #{createTime}, #{updateTime}, #{createUser}, #{updateUser})
+    </insert>
+
+    <!--
+      修改。
+
+      ★ <b>没有 package_type</b>：DTO 里也没有这个字段，编译期就改不了。
+        它决定哪几个专属列必填，允许改它等于允许把一个套餐的语义换掉，
+        而已经买了这个套餐的车主手上还是老语义。
+
+      ★ <b>没有 station_id</b>：它参与唯一键 uk_pkg_name_station，
+        允许改等于允许把一个已上架的套餐挪到另一个站点作用域下 ——
+        同名套餐在目标作用域里可能已经存在，会在一个「看起来很正常的保存」
+        里撞唯一键；更糟的是没撞上的时候，套餐的可见范围被静默改变了。
+
+      ★ 四个专属列的 <if test="x != null"> 意味着<b>没法把它们清成 null</b>，
+        而 assertTypeFields 又会拦住「不该有值的列有值」。
+        本轮不是问题（类型不可改，所以不需要清），但这是一个已知的边界。
+    -->
+    <update id="update">
+        UPDATE charge_package
+        <set>
+            <if test="name != null and name != ''">name = #{name},</if>
+            <if test="categoryId != null">category_id = #{categoryId},</if>
+            <if test="price != null">price = #{price},</if>
+            <if test="originPrice != null">origin_price = #{originPrice},</if>
+            <if test="energyKwh != null">energy_kwh = #{energyKwh},</if>
+            <if test="durationMinutes != null">duration_minutes = #{durationMinutes},</if>
+            <if test="times != null">times = #{times},</if>
+            <if test="serviceDiscount != null">service_discount = #{serviceDiscount},</if>
+            <if test="validDays != null">valid_days = #{validDays},</if>
+            <if test="description != null and description != ''">description = #{description},</if>
+            <if test="image != null and image != ''">image = #{image},</if>
+            <if test="status != null">status = #{status},</if>
+            <if test="sort != null">sort = #{sort},</if>
+            update_time = #{updateTime},
+            update_user = #{updateUser}
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <!--
+      分页查询。
+
+      ★ ORDER BY sort ASC, id DESC 而不是只有 id DESC：
+        套餐列表有业务排序（sort 字段），后台希望能手动调顺序。
+        加上 id 作为第二排序键是为了<b>在 sort 相同时保持稳定</b> ——
+        sort 默认是 0，所以大量套餐的 sort 是相同的，
+        只按 sort 排的话行序在相同值之间未定义，翻页会重复或漏行。
+
+      ★ stationId 是精确匹配，0 是一个有意义的值（全平台套餐）。
+        不传和传 0 语义不同：不传是不限站点，传 0 是只要全平台套餐。
+        见 ChargePackagePageQueryDTO 的类注释。
+    -->
+    <select id="page" resultType="com.chargeops.entity.ChargePackage">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM charge_package
+        <where>
+            <if test="name != null and name != ''">
+                AND name LIKE CONCAT('%', #{name}, '%')
+            </if>
+            <if test="categoryId != null">
+                AND category_id = #{categoryId}
+            </if>
+            <if test="packageType != null">
+                AND package_type = #{packageType}
+            </if>
+            <!-- ★ 这里判断的是 != null，不是 != 0。
+                 0 是「全平台套餐」这个具体的查询条件，不能被当成「没传」跳过 -->
+            <if test="stationId != null">
+                AND station_id = #{stationId}
+            </if>
+            <if test="status != null">
+                AND status = #{status}
+            </if>
+        </where>
+        ORDER BY sort ASC, id DESC
+    </select>
+
+</mapper>

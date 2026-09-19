@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.chargeops.mapper.StationMapper">
+
+    <!--
+      列清单抽出来被 getById / page / listByIds 共用。
+
+      ★ station 没有需要隐藏的列（不像 staff 的 password），所以这里是全列。
+      但只要它被三处 include，就仍然值得抽 —— 加一列时只改一行。
+
+      不写 <resultMap>：map-underscore-to-camel-case=true 已经把
+      service_phone → servicePhone 这类映射做掉了。
+    -->
+    <sql id="Base_Column_List">
+        id, code, name, operator, province, city, district, address,
+        longitude, latitude, service_phone, open_time, close_time, parking_fee, status,
+        create_time, update_time, create_user, update_user
+    </sql>
+
+    <select id="getById" resultType="com.chargeops.entity.Station">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM station
+        WHERE id = #{id}
+    </select>
+
+    <select id="listByIds" resultType="com.chargeops.entity.Station">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM station
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+    <!--
+      新增。
+
+      ★ open_time / close_time 直接取 #{openTime} / #{closeTime} —— 实体里是 String，
+        而 MyBatis 的默认 StringTypeHandler 会调 ps.setString()，
+        MySQL 把它当字面量解析成 TIME。
+
+        ★ 这正是 '24:00:00' 能原样往返的原因：值以字符串形态一路走到驱动，
+          全程没有任何类型转换介入。如果实体用 LocalTime，
+          这个值在 Java 侧就已经不存在了。
+
+      ★ 审计四列由 AutoFillInterceptor 填进对象，这里取属性值。
+        删掉 Mapper 上的 @AutoFill 不会报错 —— create_time 在 DDL 里有 DEFAULT，
+        会被填成当前时间，但 create_user 会是 NULL，静默。
+    -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO station (code, name, operator, province, city, district, address,
+                             longitude, latitude, service_phone, open_time, close_time, parking_fee, status,
+                             create_time, update_time, create_user, update_user)
+        VALUES (#{code}, #{name}, #{operator}, #{province}, #{city}, #{district}, #{address},
+                #{longitude}, #{latitude}, #{servicePhone}, #{openTime}, #{closeTime}, #{parkingFee}, #{status},
+                #{createTime}, #{updateTime}, #{createUser}, #{updateUser})
+    </insert>
+
+    <!--
+      修改：<set> + <if> 只更新非 null 的字段。
+
+      ★ 注意 status 的判断条件只能写 != null，不能写 != ''
+        —— status 是 Integer，拿它和空串比较永远是 false，
+        条件失效而 SQL 照常执行，是个不会报错的坑。
+
+      ★ 审计两列无条件带上：它们一定非 null（AutoFillInterceptor 保证），
+        而且必须无条件写 —— 没改任何业务字段的一次 update 也应该
+        让 update_time 前进。
+
+      ★ close_time = '24:00:00' 在这里同样原样往返，理由见 insert 的注释。
+    -->
+    <update id="update">
+        UPDATE station
+        <set>
+            <if test="code != null and code != ''">code = #{code},</if>
+            <if test="name != null and name != ''">name = #{name},</if>
+            <if test="operator != null and operator != ''">operator = #{operator},</if>
+            <if test="province != null and province != ''">province = #{province},</if>
+            <if test="city != null and city != ''">city = #{city},</if>
+            <if test="district != null and district != ''">district = #{district},</if>
+            <if test="address != null and address != ''">address = #{address},</if>
+            <if test="longitude != null">longitude = #{longitude},</if>
+            <if test="latitude != null">latitude = #{latitude},</if>
+            <if test="servicePhone != null and servicePhone != ''">service_phone = #{servicePhone},</if>
+            <if test="openTime != null and openTime != ''">open_time = #{openTime},</if>
+            <if test="closeTime != null and closeTime != ''">close_time = #{closeTime},</if>
+            <if test="parkingFee != null">parking_fee = #{parkingFee},</if>
+            <if test="status != null">status = #{status},</if>
+            update_time = #{updateTime},
+            update_user = #{updateUser}
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <!--
+      分页查询。
+
+      ★ ORDER BY id DESC 不是装饰，是分页正确性的前提。
+        没有 ORDER BY 时 MySQL 返回行的顺序是未定义的（取决于执行计划、
+        是否走索引、buffer pool 状态），同一个查询两次调用可能给出不同的顺序。
+        翻页时这就表现为「第 1 页的第 7 条在第 2 页又出现了一次」，
+        而且只在数据量变大、执行计划变化之后才出现。
+        用 id DESC 而不是 name：后者不唯一，排序结果仍然不稳定。
+
+      ★ 不加 <if test="..."> 之外的任何东西 —— PageHelper 会在
+        这条 SQL 外面套 SELECT COUNT(*) 和 LIMIT，SQL 里多余的
+        分号或注释会让拼接出来的语句变成语法错误。
+    -->
+    <select id="page" resultType="com.chargeops.entity.Station">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM station
+        <where>
+            <if test="name != null and name != ''">
+                AND name LIKE CONCAT('%', #{name}, '%')
+            </if>
+            <!-- ★ code 是<b>前缀</b>匹配，和 name 不同。
+                 站点编码形如 ST-440300-0001，运维是从左往右敲的，
+                 而两侧 % 会让 uk_station_code 完全用不上 —— 一个
+                 「按编码搜」的入口却要走全表扫描，是不必要的。
+                 注意：前缀匹配也不等于能用上索引，只有 <b>大小写敏感 +
+                 无前导通配符</b> 时才可能，这里至少满足了后半条 -->
+            <if test="code != null and code != ''">
+                AND code LIKE CONCAT(#{code}, '%')
+            </if>
+            <!-- city 走索引 idx_station_city_status，必须精确匹配才能用上。
+                 写成 LIKE 会让索引失效 —— 而这一条恰恰是最该走索引的过滤条件 -->
+            <if test="city != null and city != ''">
+                AND city = #{city}
+            </if>
+            <if test="status != null">
+                AND status = #{status}
+            </if>
+        </where>
+        ORDER BY id DESC
+    </select>
+
+</mapper>

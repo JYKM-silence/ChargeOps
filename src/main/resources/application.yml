@@ -1,0 +1,250 @@
+# ============================================================================
+# ChargeOps 通用配置
+# ============================================================================
+# 这个文件里不放任何连接信息（数据库地址、密码、Redis 端口），那些在
+# application-dev.yml / application-prod.yml 里 —— 它们的差异只是「连哪里」，
+# 而下面这些是「应用怎么跑」，跟环境无关。
+#
+# ★ 老库的 application.yml 里有两行必须删掉的配置，这里特意提一下，
+#   因为它们很容易在拷贝时一起带过来：
+#
+#   spring.mvc.pathmatch.matching-strategy: ant_path_matcher
+#       这是给 springfox 打的补丁。springfox 不认识 Spring 5.3 引入的
+#       PathPatternParser，所以老库把整个应用的路径匹配退回旧实现。
+#       springdoc 原生支持 PathPatternParser，不需要这行；
+#       留着它反而会让「拦截器为什么没拦住某个路径」变得难以解释 ——
+#       因为路径匹配的规则悄悄换了一套。
+#
+#   spring.main.allow-circular-references: true
+#       这是循环依赖的止痛药。Boot 2.6 起默认禁止循环依赖，老库靠它绕过。
+#       正确做法是把循环依赖改掉（构造器注入会在启动时直接暴露它，
+#       这是好事，见 JwtTokenAdminInterceptor 的注释），而不是把它允许回去。
+# ============================================================================
+
+server:
+  port: 8081
+  servlet:
+    encoding:
+      charset: UTF-8
+      # force=true 让请求和响应都强制用 UTF-8，不依赖客户端有没有声明 charset。
+      # 不加的话，某些客户端发来的中文参数会乱码，而且只在特定工具里复现
+      force: true
+
+spring:
+  application:
+    name: chargeops
+
+  profiles:
+    active: dev
+
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 20MB
+
+# ============================================================================
+# MyBatis
+# ============================================================================
+mybatis:
+  # XML 的位置。放在 classpath:mapper/ 下，和 Mapper 接口的包路径（com.chargeops.mapper）
+  # 不一致 —— 这是刻意的：XML 放 resources 下才需要在这里声明位置，
+  # 而且一眼能看出「哪些 Mapper 用了 XML」。
+  #
+  # ★ 另一种做法是把 XML 放在 src/main/java 里和接口同目录（IDEA 的默认习惯），
+  #   但 Maven 默认不会把 src/main/java 下的 .xml 复制到 target/classes，
+  #   需要在 pom 里额外配 <resources> 包含 **/*.xml。
+  #   那是个「不配就静默失效」的配置：启动时 MyBatis 报
+  #   "Invalid bound statement (not found)"，而文件明明就在那。
+  mapper-locations: classpath:mapper/*.xml
+
+  # 让 XML 里的 resultType 可以直接写 Staff，而不用写全限定名
+  type-aliases-package: com.chargeops.entity
+
+  configuration:
+    # ★ 必开。把数据库的 snake_case 列名映射到 Java 的 camelCase 属性名：
+    #   station_id  →  stationId
+    #   create_time →  createTime
+    # 不开的话这些字段全是 null，而且不报错 —— MyBatis 找不到匹配的属性时
+    # 只是静默跳过。表现是「查出来的对象大部分字段是空的」。
+    map-underscore-to-camel-case: true
+
+    # NULL 值也调用 setter。Map 类型的返回值需要它，实体类其实不需要
+    # （字段默认就是 null）。开着没坏处，但要知道它不是必须的
+    call-setters-on-nulls: true
+
+# ============================================================================
+# PageHelper 分页
+# ============================================================================
+pagehelper:
+  # 指明方言。虽然有 auto-dialect 自动识别，但显式声明能省掉一次
+  # 「第一次分页时去读数据库元信息」的开销，也避免识别错误
+  helper-dialect: mysql
+
+  # reasonable=true 会在页码越界时做修正：
+  #   页码 < 1        → 查第一页
+  #   页码 > 总页数   → 查最后一页
+  #
+  # ★ 这是一个有争议的开关，知道两边代价再决定开不开：
+  #   开着 —— 前端传错页码不会白屏，但**请求第 999 页会返回最后几行数据**，
+  #           调用方无法区分「这就是最后一页」和「你要的那页没有」
+  #   关着 —— 越界返回空列表，语义更准确，但前端要自己处理空态
+  # 这里开着是因为后台管理页面的分页组件在删除数据后容易出现页码越界，
+  # 返回空列表会让用户以为「数据都没了」。
+  reasonable: true
+
+  # 允许把 pageNum/pageSize 当作方法参数直接传给 Mapper 方法，
+  # 不用显式调 PageHelper.startPage()。
+  # ★ 本项目**不使用**这个特性，理由见下一条的说明 —— 它会让
+  #   「这一页到底是从哪来的」变得难以追踪
+  support-methods-arguments: false
+
+  params:
+    pageNum: pageNum
+    pageSize: pageSize
+
+# ============================================================================
+# ChargeOps 业务配置
+# ============================================================================
+chargeops:
+  jwt:
+    # ------------------------------------------------------------------
+    # ★★ JWT 密钥的硬性要求：UTF-8 编码后 ≥ 32 字节 ★★
+    #
+    # 这是 jjwt 0.12.x 相比 0.9.1 最大的行为变化。新版用
+    # Keys.hmacShaKeyFor() 生成签名密钥，而 HS256 算法要求密钥至少
+    # 256 bit = 32 字节，不够就抛 WeakKeyException。
+    #
+    # 而演示用的默认密钥往往只有 6~7 个字符（一个短单词）——
+    # 那是 jjwt 0.9.1 时代，它对密钥长度没有任何要求。
+    # 把那种配置直接沿用过来，表现是：
+    #   - 应用能正常启动
+    #   - 数据库、Redis 都连得上
+    #   - 只有**调用登录接口的那一刻**才抛异常，而且是 **500 不是 401**
+    # 排查时很容易顺着 500 去看 Service 有没有空指针，
+    # 而真正的原因在一个看起来完全无关的地方：配置项太短。
+    #
+    # JwtUtil 里加了显式的长度校验，就是为了把错误消息
+    # 指向「密钥太短」而不是让它从 jjwt 内部冒出来。
+    #
+    # 下面这两个是**开发环境的假密钥**，写死在文件里是安全的 ——
+    # 它们只能签发本机 dev 环境的 token。生产环境用环境变量覆盖，
+    # 见 application-prod.yml（那里写成没有默认值的 ${...} 占位符，
+    # 忘配就启动失败，而不是偷偷用一个公开在 GitHub 上的密钥）
+    # ------------------------------------------------------------------
+    admin-secret-key: chargeops-dev-admin-secret-key-not-for-production-use-2026
+    # 2 小时。管理端是内部人员使用，会话短一点更安全；
+    # 而且有 /me 这个探针接口，过期后前端能立刻跳登录页
+    admin-ttl: 7200000
+    admin-token-name: token
+
+    # ★ 车主端用**另一把**密钥，不能和管理端共用。
+    #   共用的话，车主端小程序一旦被逆向、密钥泄露，
+    #   攻击者就能签出一个 staffId=1 的 token 直接拿管理员权限。
+    #   两把密钥把这个影响面隔开了。
+    member-secret-key: chargeops-dev-member-secret-key-not-for-production-use-2026
+    # 7 天。车主端是小程序，用户不希望在充电站现场被要求重新登录
+    member-ttl: 604800000
+    # 车主端从哪个请求头取 token。
+    # 老库沿用小程序模板的习惯用了 authentication 这个名字，
+    # 名字本身无所谓，重要的是**前端和后端必须一致** ——
+    # 不一致的表现是「登录成功了，但下一个请求 401」，而两边都觉得自己是对的
+    member-token-name: authentication
+
+  storage:
+    # local —— 写本地磁盘。这是目前**唯一**实现了的选项
+    # ★ 写一个不认识的值不会静默降级，而是启动直接失败并告诉你合法值是什么，
+    #   见 StorageConfiguration 的注释
+    type: local
+
+    # 存储根目录。支持相对路径，但会按**项目根目录**锚定，
+    # 而不是 JVM 的工作目录 —— 后者取决于你怎么启动
+    # （VS Code 点 Run / mvn spring-boot:run / java -jar 是三个不同的目录），
+    # 同一个配置会指向三个地方，而表现只是「图片打不开」。
+    # 详见 LocalFileStorage.resolveAgainstProjectRoot
+    local-dir: ./data/upload
+
+    # 拼在返回 URL 前面的部分
+    # ★ 这个值会被写进数据库（站点图片列存的就是完整 URL），
+    #   所以换域名/换端口时光改这里不够，历史数据里的旧 URL 也得一起刷。
+    #   这是「把可变的环境信息固化进业务数据」的典型代价
+    url-prefix: http://localhost:8081
+
+    # 本地上传文件的访问路径前缀。
+    # 它同时被 LocalFileStorage（拼 URL）和 WebMvcConfiguration（注册静态资源映射）
+    # 使用，必须一致，所以抽出来放配置里。
+    # ★ 不要配成 /api 开头 —— 那个前缀被 JWT 拦截器盯着，
+    #   图片会变成「必须登录才能看」，而静态资源请求不会带 token，
+    #   结果是图片全部裂掉，且日志里一条报错都没有
+    url-path: /img
+
+# ============================================================================
+# 接口文档（springdoc）
+# ============================================================================
+springdoc:
+  swagger-ui:
+    # Swagger UI 页面地址：http://localhost:8081/swagger-ui/index.html
+    path: /swagger-ui.html
+    # 按接口路径字母序排列，而不是按 Controller 声明顺序。
+    # 接口多了之后，固定顺序比「新加的排最后」更容易找到目标
+    operations-sorter: alpha
+    tags-sorter: alpha
+  api-docs:
+    # OpenAPI JSON：http://localhost:8081/v3/api-docs
+    # ★ 验收时**先访问这个**。它是纯 JSON，不依赖任何前端静态资源：
+    #   有 JSON → 文档数据本身是好的，此时 UI 打不开就说明问题在静态资源上
+    #   没 JSON → springdoc 根本没生效，方向完全不同
+    #   先看它能把这两类问题分开，省掉大量瞎猜
+    path: /v3/api-docs
+
+# ============================================================================
+# 可观测性
+# ============================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        # 只暴露 health 和 info。★ 不要图省事写 "*" ——
+        # /actuator/env 会把所有配置项（含数据库密码、JWT 密钥）返回出来，
+        # /actuator/heapdump 能下载整个堆内存快照。
+        # 这两个端点在生产环境的泄露后果比大多数人以为的严重得多
+        include: health,info,metrics
+  endpoint:
+    health:
+      # ★★ 这里**刻意不写** show-details ★★
+      #
+      # 它是「把数据库、Redis 的连通状态和版本一起显示出来」的开关，
+      # 开发时价值很高 —— 一眼能看出「是数据库没起来还是代码有问题」，
+      # 比翻启动日志快得多。所以它开在 application-dev.yml 里。
+      #
+      # 而这个文件是**环境无关**的：写在这里的每一行在 dev 和 prod 都会生效。
+      # show-details: always 在生产环境的后果是 /actuator/health
+      # （一个通常不需要认证、还可能被探针和外部监控扫到的端点）
+      # 会吐出数据库版本、Redis 版本、磁盘路径这类信息 ——
+      # 对攻击者来说这是一份免费的指纹清单。
+      #
+      # 默认值就是 never，所以这里什么都不写才是正确的生产形态。
+      # ★ 判断一条配置该放哪层，标准只有一个：
+      #   「它在生产环境也成立吗？」不成立就属于 dev 文件。
+
+# ============================================================================
+# 日志
+# ============================================================================
+logging:
+  level:
+    # ★ root 保持 info：这是生产环境该有的级别，而且它是**兜底**，
+    #   下面那些按包名开的级别都是在这个基础上做减法之外的加法。
+    root: info
+    # ★★ 这里**刻意不写** com.chargeops: debug ★★
+    #
+    # 同一个道理：它是环境无关文件，写在这里等于生产环境也全量 debug。
+    # 结果是日志量涨一到两个数量级（每个请求、每次缓存命中都打一行），
+    # 既冲掉真正的错误，也把日志存储成本推上去。
+    #
+    # 它在 application-dev.yml 里，而且那里开的是
+    # com.chargeops.mapper: debug（精确到 Mapper 包）而不是整个 com.chargeops ——
+    # 理由见那个文件里对应的注释。
+  pattern:
+    # 加上时间戳和线程名。默认格式没有线程名，
+    # 而排查 ThreadLocal 相关的 bug（BaseContext 没清理导致串号）
+    # 必须能看到「同一个线程处理了两个请求」
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

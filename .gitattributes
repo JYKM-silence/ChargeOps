@@ -1,0 +1,23 @@
+# 统一换行符，避免「同一个人换个系统，整个文件显示成被改过」
+#
+# 为什么这个项目特别需要它：
+# deploy/nginx.conf、Dockerfile、*.yml 这些文件是要挂进 Linux 容器里用的。
+# 在 Windows 上检出时如果被换成 CRLF，nginx 读到的配置里每行末尾都多一个 \r，
+# 虽然大多数情况能容忍，但这是那种「在我机器上好好的」的典型来源。
+#
+# eol=lf 表示：仓库里存 LF，检出到工作区也用 LF。
+* text=auto eol=lf
+
+# Windows 批处理文件必须保持 CRLF，否则 cmd 解析会出问题
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件不要做任何换行符转换，否则文件会被改坏
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.jar binary
+*.p12 binary
+*.xlsx binary

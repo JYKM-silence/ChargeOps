@@ -1,0 +1,37 @@
+# 构建上下文里不需要的东西。
+# 上下文越小，docker build 第一步「发送构建上下文」越快 ——
+# 不排除 target/ 的话，每次构建都要把几百 M 的编译产物传给 docker daemon。
+
+**/target/
+**/*.class
+
+.git/
+.gitignore
+
+.idea/
+*.iml
+.vscode/
+.settings/
+
+.claude/
+
+logs/
+*.log
+
+# 上传的文件不参与构建。
+# 它不进镜像（Dockerfile 只 COPY 了 pom 和 src），但如果不排除，
+# docker build 会先把这几 M 的图片打包发给 daemon —— 白等。
+# 部署时用 docker cp 灌进卷里，见 docker-compose.yml 的 volumes 注释
+data/
+
+# 密钥和证书绝对不能进镜像。镜像分层是永久的 ——
+# 就算后面的层里删掉，前面那一层里还留着，任何人 docker save 都能翻出来。
+*.p12
+*.pem
+*.key
+*.jks
+*.keystore
+
+# 文档不影响构建，但 Dockerfile 里要 COPY 的 pom 和 src 不在排除范围内
+*.md
+docs/

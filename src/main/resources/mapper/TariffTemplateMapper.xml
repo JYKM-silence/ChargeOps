@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.chargeops.mapper.TariffTemplateMapper">
+
+    <!--
+      ★ 只有 tariff_template 一张表的列。
+        规则不在这个 Mapper 里 —— 见接口的类注释。
+    -->
+    <sql id="Base_Column_List">
+        id, code, name, region, description, status,
+        create_time, update_time, create_user, update_user
+    </sql>
+
+    <select id="getById" resultType="com.chargeops.entity.TariffTemplate">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM tariff_template
+        WHERE id = #{id}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO tariff_template (code, name, region, description, status,
+                                     create_time, update_time, create_user, update_user)
+        VALUES (#{code}, #{name}, #{region}, #{description}, #{status},
+                #{createTime}, #{updateTime}, #{createUser}, #{updateUser})
+    </insert>
+
+    <!--
+      修改。
+
+      ★ <b>没有 code 之外的业务字段被排除</b> —— 头信息都是描述性的，
+        改错了不会让任何一笔订单算错钱（订单冻结的是 id）。
+        这和 Connector 刻意排除 charger_id、ChargePackage 刻意排除
+        package_type/station_id 是同一个判断的两个方向：
+        <b>改动会不会让别处的数据失真</b>。
+
+      ★ status 只影响「还能不能被新绑定」，不影响已有绑定。
+        见 TariffTemplate 的类注释第三节。
+    -->
+    <update id="update">
+        UPDATE tariff_template
+        <set>
+            <if test="code != null and code != ''">code = #{code},</if>
+            <if test="name != null and name != ''">name = #{name},</if>
+            <if test="region != null and region != ''">region = #{region},</if>
+            <if test="description != null and description != ''">description = #{description},</if>
+            <if test="status != null">status = #{status},</if>
+            update_time = #{updateTime},
+            update_user = #{updateUser}
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <!--
+      全部启用中的模板，供绑定站点时的下拉框使用。
+
+      ★ 只取 status = 1。停用的模板不出现在「新建绑定」的选项里，
+        但<b>已存在的绑定不受影响</b> —— 那些绑定有自己的行，
+        解析时不会经过这条 SQL。
+
+      ★ 不分页：这是一个下拉框的数据源，分页的下拉框没法用。
+    -->
+    <select id="listAllEnabled" resultType="com.chargeops.entity.TariffTemplate">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM tariff_template
+        WHERE status = 1
+        ORDER BY id
+    </select>
+
+    <!--
+      批量按主键查，给站点绑定的列表补模板名。
+
+      ★ 和 listAllEnabled 正好相反：这里<b>不过滤 status</b>。
+        那条 SQL 服务的是「新建绑定」的下拉框（停用的模板不该被选），
+        这条服务的是「已经存在的绑定」补名字 ——
+        模板后来停用了不改变「这条绑定指向它」这个事实，
+        过滤掉只会让列表里多出一个空白的名字。
+
+      ★ ids 为空集合时 <foreach> 会展开成 IN ()，是 SQL 语法错误。
+        调用方先判空，见接口上的 javadoc。
+    -->
+    <select id="listByIds" resultType="com.chargeops.entity.TariffTemplate">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM tariff_template
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+    <!--
+      分页查询。
+
+      ★ <b>两个模糊字段的匹配方式刻意不同：</b>
+        code 是<b>前缀</b>匹配（运维按编码从左往右敲），
+        name 是<b>包含</b>匹配（「2026」可能出现在名字中间）。
+        和 ChargerMapper 对 device_no / name 的处理一致。
+
+      ★ region 是<b>精确</b>匹配，不是 LIKE —— 它和 status 组成
+        idx_tariff_template_region_status (region, status)，
+        写成 LIKE 会让这个联合索引整个失效。
+        这正是「哪些模板能用在这个地区」最主要的查询路径。
+
+      ★ ORDER BY id DESC，理由见 StationMapper.xml。
+    -->
+    <select id="page" resultType="com.chargeops.entity.TariffTemplate">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM tariff_template
+        <where>
+            <if test="code != null and code != ''">
+                AND code LIKE CONCAT(#{code}, '%')
+            </if>
+            <if test="name != null and name != ''">
+                AND name LIKE CONCAT('%', #{name}, '%')
+            </if>
+            <if test="region != null and region != ''">
+                AND region = #{region}
+            </if>
+            <if test="status != null">
+                AND status = #{status}
+            </if>
+        </where>
+        ORDER BY id DESC
+    </select>
+
+</mapper>

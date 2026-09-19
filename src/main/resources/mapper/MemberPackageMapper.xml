@@ -1,0 +1,297 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.chargeops.mapper.MemberPackageMapper">
+
+    <!--
+      member_package 没有需要隐藏的列，这里是全列。
+      被 getById / listByMember / listUsable 三处共用 ——
+      不抽的话以后加一列要改三处。
+
+      ★ 23 列，是库里最宽的一张表之一。这不是冗余：
+        「按 package_type 只有一组生效」的这几列如果合成一个
+        (value, unit) 二元组，类型信息就进了数据里 ——
+        结算时要先读 unit 再决定怎么算，等于把编译期的分支
+        挪到了运行期，而且 SQL 层面再也无法约束「电量必须是 decimal」。
+        charge_package 已经用同样的理由做了同样的选择（见那边的注释）。
+    -->
+    <sql id="Base_Column_List">
+        id, member_id, package_id, buy_order_id, package_type, package_name,
+        total_kwh, remaining_kwh, total_minutes, remaining_minutes,
+        total_times, remaining_times, service_discount,
+        effective_from, expire_time, locked_order_id, status, remark, version,
+        create_time, update_time, create_user, update_user
+    </sql>
+
+    <select id="getById" resultType="com.chargeops.entity.MemberPackage">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM member_package
+        WHERE id = #{id}
+    </select>
+
+    <!--
+      买下一份权益。
+
+      ★ 全列插入 —— DDL 的 DEFAULT 只在列**没有出现在 INSERT 里**时生效，
+        所以 NOT NULL 且没有默认值的列漏一个就是 errno 1048。
+        必须由调用方给的列见 MemberPackageMapper#insert 的 javadoc。
+
+      ★ expire_time 没有 DEFAULT，这是刻意的：
+        忘了填应该是 errno 1364 这种响亮的报错，
+        而不是静默拿到一个「永久有效」—— 后者是能白送钱的错误。
+
+      ★ 审计四列（create_time / update_time / create_user / update_user）
+        由 AutoFillInterceptor 反射填好之后传进来，这里只取属性值。
+        方法上标的 @AutoFill(INSERT) 是这个插件生效的依据。
+    -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO member_package (member_id, package_id, buy_order_id,
+                                    package_type, package_name,
+                                    total_kwh, remaining_kwh,
+                                    total_minutes, remaining_minutes,
+                                    total_times, remaining_times,
+                                    service_discount,
+                                    effective_from, expire_time,
+                                    locked_order_id, status, remark, version,
+                                    create_time, update_time, create_user, update_user)
+        VALUES (#{memberId}, #{packageId}, #{buyOrderId},
+                #{packageType}, #{packageName},
+                #{totalKwh}, #{remainingKwh},
+                #{totalMinutes}, #{remainingMinutes},
+                #{totalTimes}, #{remainingTimes},
+                #{serviceDiscount},
+                #{effectiveFrom}, #{expireTime},
+                #{lockedOrderId}, #{status}, #{remark}, #{version},
+                #{createTime}, #{updateTime}, #{createUser}, #{updateUser})
+    </insert>
+
+    <!--
+      车主端「我的套餐」。
+
+      ★ 不过滤 status —— 已用尽 / 已过期 / 已作废的也要返回，
+        让前端显示成灰态。滤掉的话用户会以为「我的套餐凭空消失了」。
+
+      ★ ORDER BY status, expire_time, id 正好对上
+        idx_mp_member_status_expire (member_id, status, expire_time)：
+        最左列等值定位，后面两列提供有序结果，**不产生 filesort**。
+
+      ★ 末尾的 id 不是多余的：expire_time 到毫秒，理论上仍可能重复
+        （同一批导入的数据、或 expire_time 都是 9999 哨兵的永久权益）。
+        没有唯一列收尾时，MySQL 对相等行的返回顺序是未定义的 ——
+        两次请求的顺序可能不同，前端刷新时会看到列表里的项来回跳。
+    -->
+    <select id="listByMember" resultType="com.chargeops.entity.MemberPackage">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM member_package
+        WHERE member_id = #{memberId}
+        ORDER BY status, expire_time, id
+    </select>
+
+    <!--
+      ★★ 结算用：找「此刻可用」的权益。这段 WHERE 是整个 Mapper 最要紧的地方。★★
+
+        status = 1                ← 状态列是缓存，**不能单独作为判据**
+        locked_order_id IS NULL   ← 没被别的订单占着
+        expire_time > #{now}      ← 没过期
+        remaining_* > 0           ← 还有余量（按类型选对应的那一列）
+
+      ★ 为什么后两个条件不能省：DDL 注释里写着「status 是缓存，
+        expire_time 和剩余量才是真相」。
+        少了 expire_time —— 一份过期但没人刷新过状态的权益会被发出去；
+        少了余量 —— 一份用尽的权益会被再次选中，结算时扣成负数。
+        两者都不会报错，只会让钱对不上。
+
+      ★ expire_time 传的是精确到毫秒的时间（datetime(3)），
+        用 > 而不是 >= 半开区间语义和计费时段一致：
+        权益在 expire_time 那一毫秒**已经失效**。
+
+      ★ ORDER BY expire_time ASC = 先到期的先用。
+        反过来的话，一份这个月过期的权益会被压在明年过期的后面，
+        直到彻底作废都没被用过 —— 用户会认为「我的套餐白买了」。
+        排序列和上面的等值列（member_id, package_type）连起来，
+        正好是 idx_mp_member_type_status 的最左三列。
+
+      ★★ 折扣包（packageType=3）走 when 分支，**不含余量条件** ★★
+        它不消耗，没有 remaining_* 可判。给它加上余量判断的话，
+        remaining 恒为 NULL，`NULL > 0` 恒不成立 ——
+        结果是折扣包**永远选不出来**，而且是静默的：
+        查询正常返回空列表，没有报错。这正是「NULL 参与比较恒为 NULL」
+        那个陷阱的又一例，也是 DDL 里为什么把 status / station_id
+        这类字段全都设成 NOT NULL 的原因。
+
+      ★ 用 <choose> 而不是三个并列的 <if>：三种类型互斥，
+        并且 packageType 是必传参数（不可能为 null）。
+        <if> 写法在参数意外为 null 时会退化成「所有类型都不加余量条件」，
+        那等于把一份用尽的权益发出去。<choose> 没有这个退化路径。
+    -->
+    <select id="listUsable" resultType="com.chargeops.entity.MemberPackage">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM member_package
+        WHERE member_id = #{memberId}
+          AND package_type = #{packageType}
+          AND status = 1
+          AND locked_order_id IS NULL
+          AND expire_time &gt; #{now}
+        <choose>
+            <when test="packageType == 1">
+                AND remaining_kwh &gt; 0
+            </when>
+            <when test="packageType == 2">
+                AND remaining_minutes &gt; 0
+            </when>
+            <when test="packageType == 4">
+                AND remaining_times &gt; 0
+            </when>
+        </choose>
+        ORDER BY expire_time, id
+    </select>
+
+    <!--
+      锁定一份权益给某笔订单。
+
+      ★ 影响行数 1 = 抢到了；0 = 被别人抢走了，
+        调用方应回到 listUsable 取下一份重试，而不是直接失败。
+
+      ★ locked_order_id IS NULL 这个条件看着和唯一索引重复，其实不然：
+        唯一索引拦下冲突时抛的是 DuplicateKeyException，调用方要多处理一种异常；
+        带上这个条件，正常情况下冲突就退化成一次普通的「影响行数 0」。
+        唯一索引仍然是最后一道防线（并发的两个事务可能都通过了这个检查），
+        只是正常情况下它不会被触发。
+
+      ★ status = 1 也带上：一份已作废的权益不该被锁住。
+        少了它的话，作废和下单并发时会出现「钱没退、权益也不能用」的中间状态。
+
+      ★ 不碰 update_user —— 这是订单流程驱动的状态迁移，不是「有人编辑了记录」。
+        行为人记录在 charging_order_event.source / operator_id。
+        update_time 由调用方传，和订单、流水用同一个时刻。
+    -->
+    <update id="lockForOrder">
+        UPDATE member_package
+        SET locked_order_id = #{orderId},
+            update_time = #{updateTime}
+        WHERE id = #{id}
+          AND locked_order_id IS NULL
+          AND status = 1
+    </update>
+
+    <!--
+      释放锁定（取消订单 / 超时未启动）。
+
+      ★ 余量不动 —— 这是它和 settle 的唯一区别。
+
+      ★ WHERE 里的 locked_order_id = #{orderId} 让它**幂等**，
+        而且更重要的是它防住了一个具体的错误：
+        一个延迟到达的释放请求（比如超时任务扫到了已经取消的订单）
+        会把**另一笔订单**刚锁上的这份权益给释放掉。
+        那笔订单结算时 WHERE locked_order_id = 自己的 id 匹配不上，
+        扣不到量 —— 钱收了，量没扣，而且全程没有报错。
+    -->
+    <update id="releaseLock">
+        UPDATE member_package
+        SET locked_order_id = NULL,
+            update_time = #{updateTime}
+        WHERE id = #{id}
+          AND locked_order_id = #{orderId}
+    </update>
+
+    <!--
+      ★★★ 三个 settle 方法共用一个必须知道的 MySQL 行为 ★★★
+
+        **SET 子句是从左到右求值的，后面的子句看到的是前面刚改完的值。**
+
+      这不是标准 SQL（标准里所有 SET 都读原值），是 MySQL 的单表 UPDATE 语义。
+      它直接决定了 status 那一行**必须写在扣量那一行之前**，而且比较的是原值：
+
+        ✅  status = CASE WHEN remaining_kwh <= #{usedKwh} THEN 2 ELSE status END,
+            remaining_kwh = remaining_kwh - #{usedKwh},
+            ↑ status 先算，此时 remaining_kwh 还是原值
+              「我有的 <= 你要扣的」⇔ 扣完 <= 0 ⇔ 用尽
+
+        ❌  remaining_kwh = remaining_kwh - #{usedKwh},
+            status = CASE WHEN remaining_kwh - #{usedKwh} <= 0 THEN 2 ELSE status END,
+            ↑ 扣量先执行，CASE 读到的 remaining_kwh 已经减过一次，
+              于是**又减了一次** —— 条件提前一步成立
+
+      错误写法的后果（已在真库上复现）：剩余 2 次、扣 1 次之后，
+      剩余是 1 但 status 被置成 2（已用尽）。
+      一辆车还剩 1 次没用，第 10 次充电会被静默拒绝 ——
+      而第 9 次就已经显示「已用尽」了。
+
+      ★ **改这三个语句时不要把 status 挪到扣量后面**，哪怕是为了「读起来更顺」。
+        下面每个语句都有一行注释指着这里。
+    -->
+
+    <!--
+      结算：电量包。扣量、释放锁、用尽则改状态 —— 三件事在同一条语句里完成。
+
+      ★ 拆成三条 UPDATE 的话，中间任何一步失败或重试都会留下不一致，
+        最典型的是「锁释放了但量没扣」，表现为用户白充一次电。
+
+      ★ status 用 CASE 而不是让调用方先查再决定 —— 判断和修改必须原子。
+        用「原值 <= 扣减量」而不是「原值 - 扣减量 = 0」：
+        理论上不该扣成负数，但真出现了（比如重复结算没被拦住），
+        <= 至少能把状态标成已用尽，而不是留下一个负余额却仍然显示「生效中」。
+
+      ★★ status 必须在 remaining_kwh 之前赋值，见文件上方那段说明 ★★
+
+      ★ WHERE 里的 locked_order_id = #{orderId} 是**幂等闸门**：
+        第一次执行后它被置为 NULL，设备重复上报触发的第二次结算
+        必然匹配不上，影响 0 行 —— 而不是再扣一次。
+        已经在真库上验证过：第一次影响 1 行，第二次影响 0 行。
+    -->
+    <update id="settleEnergy">
+        UPDATE member_package
+        SET status = CASE WHEN remaining_kwh &lt;= #{usedKwh} THEN 2 ELSE status END,
+            remaining_kwh = remaining_kwh - #{usedKwh},
+            locked_order_id = NULL,
+            update_time = #{updateTime}
+        WHERE id = #{id}
+          AND locked_order_id = #{orderId}
+    </update>
+
+    <!--
+      结算：时长包。同 settleEnergy，扣的是分钟数。
+
+      ★ 分钟数一定先取整再传进来（向上取整）—— 落库的是 int，
+        传一个小数进来会被 MySQL 隐式舍入，而舍入方向由数据库决定，
+        不由业务决定。取整规则属于计费逻辑，应该在 Service 里做完。
+
+      ★★ status 必须在 remaining_minutes 之前赋值，见文件上方那段说明 ★★
+    -->
+    <update id="settleDuration">
+        UPDATE member_package
+        SET status = CASE WHEN remaining_minutes &lt;= #{usedMinutes} THEN 2 ELSE status END,
+            remaining_minutes = remaining_minutes - #{usedMinutes},
+            locked_order_id = NULL,
+            update_time = #{updateTime}
+        WHERE id = #{id}
+          AND locked_order_id = #{orderId}
+    </update>
+
+    <!--
+      结算：次卡。一次充电消耗一次。
+
+      ★ 没有「用了几次」参数，硬编码 1 —— 这是次卡的定义。
+        留一个参数出来会让人以为可以传 2，而那个语义在业务上不存在。
+
+      ★★ 这里是那个 SET 求值顺序坑最容易踩的地方，因为减数是 1：
+        写成 `remaining_times = remaining_times - 1` 在前、
+        `CASE WHEN remaining_times - 1 <= 0` 在后的话，
+        CASE 读到的是**已经减过 1 的值**，于是「减 1」被执行了两次 ——
+        **剩 1 次时就被判成已用尽**（真库上复现过）。
+        所以写成 `CASE WHEN remaining_times <= 1`，读原值。
+    -->
+    <update id="settleTimes">
+        UPDATE member_package
+        SET status = CASE WHEN remaining_times &lt;= 1 THEN 2 ELSE status END,
+            remaining_times = remaining_times - 1,
+            locked_order_id = NULL,
+            update_time = #{updateTime}
+        WHERE id = #{id}
+          AND locked_order_id = #{orderId}
+    </update>
+
+</mapper>

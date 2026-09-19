@@ -1,0 +1,280 @@
+# ============================================================================
+# 生产环境配置（application-prod.yml）
+# ============================================================================
+# 生效方式：SPRING_PROFILES_ACTIVE=prod（application.yml 里默认写的是 dev）
+#
+# ★★ 这个文件的唯一原则：**所有会变的东西都写成没有默认值的 ${...} ★★**
+#
+#   写成 ${VAR:某个默认值} 是**危险**的：那个默认值会悄悄生效，
+#   于是「忘了配生产密钥」不会让应用起不来，而是让它用一个
+#   可能在 GitHub 上公开可见的字符串去签发生产环境的 token。
+#   这种错误没有任何即时症状 —— 直到有人照着仓库里的默认值签出一个管理员 token。
+#
+#   没有默认值的话，缺配置 = 启动直接失败，失败信息里写着缺哪个变量名。
+#   **启动失败是这里最理想的结果**，因为它发生在部署阶段，
+#   而不是发生在某天凌晨的告警里。
+#
+#   下面每一行都是这个形状：${VAR} 而不是 ${VAR:default}。
+#   唯一的例外会在出现的地方单独说明。
+#
+# ★★ 为什么这个文件里没有的东西比有的东西更值得看 ★★
+#
+#   它**没有** stat-view-servlet（Druid 监控页）、**没有** show-details: always、
+#   **没有** com.chargeops: debug。这三样都在 application-dev.yml 里。
+#   它们的共同点是「开发时很有用，且都会泄露信息」。判断标准只有一条：
+#   「它在生产环境也成立吗？」不成立就属于 dev 文件。
+# ============================================================================
+
+server:
+  # 生产端口从环境变量来。容器编排时由编排层决定，不写死
+  port: ${CHARGE_OPS_SERVER_PORT}
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+  # ★ 如果部署在 Nginx / SLB / 网关后面，打开这一行。
+  #   不打开的话 request.getRemoteAddr() 拿到的是代理的 IP，
+  #   request.getScheme() 永远是 http —— 表现是「日志里所有请求都来自同一个 IP」、
+  #   「重定向的 Location 头是 http:// 而不是 https://」。
+  #   正确值取决于代理层发出的是 X-Forwarded-* 还是 Forwarded：
+  #     forward-headers-strategy: native    ← 前面是 Nginx 这类标准反代
+  #     forward-headers-strategy: framework ← 前面是 Spring Cloud Gateway
+  #   ★ 反过来也有风险：**没有代理时打开它**，客户端就能伪造 X-Forwarded-For
+  #     自填 IP。所以确认了有代理再打开。
+  # forward-headers-strategy: native
+
+spring:
+  datasource:
+    druid:
+      driver-class-name: com.mysql.cj.jdbc.Driver
+
+      # 连接串和 dev 完全一致（参数逐个解释在 application-dev.yml 里，不重复）。
+      # 唯一区别是**没有任何默认值** —— 缺一个变量就启动失败。
+      #
+      # ★ connectionTimeZone=%2B08:00 这一项在生产尤其不能省：
+      #   生产库通常是容器化的 MySQL，容器默认走 UTC。
+      #   少了它，CURRENT_TIMESTAMP(3) 自动填的 create_time
+      #   会比 Java 填的业务时间差 8 小时 —— 同一条记录里两个时间对不上，
+      #   对账时无法解释。
+      #   （%2B 是 + 的 URL 编码，直接写 + 会被解析成空格）
+      url: jdbc:mysql://${CHARGE_OPS_DB_HOST}:${CHARGE_OPS_DB_PORT}/${CHARGE_OPS_DB_NAME}?useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
+      username: ${CHARGE_OPS_DB_USERNAME}
+      password: ${CHARGE_OPS_DB_PASSWORD}
+
+      # ---------------- 连接池 ----------------
+      # ★★ 这几个数不是「调优参数」，是要和数据库容量对齐的预算 ★★
+      #
+      #   算法：max-active × 实例数 ≤ 数据库 max_connections - 为其他客户端预留的部分
+      #
+      #   默认的 MySQL max_connections 是 151，但那是给**整个实例**的，
+      #   上面还跑着别的库、还有运维自己的连接。
+      #   如果按 (20 × 10 个实例) = 200 去配，表现是：
+      #   平时一切正常，扩容到第 8 个实例之后开始随机报
+      #   「Too many connections」—— 而且是先扩的那几个实例报，
+      #   因为它们是先抢到连接的。**扩容反而让服务变得不稳定**，
+      #   这个现象很容易被误判成「新实例有问题」。
+      #
+      #   下面三个是占位值，**部署前必须按上面的公式重新算**。
+      #   ★ 写成可覆盖而不是写死，是因为「几个实例」不是代码能知道的事。
+      initial-size: ${CHARGE_OPS_DB_POOL_INITIAL:10}
+      min-idle: ${CHARGE_OPS_DB_POOL_MIN_IDLE:10}
+      max-active: ${CHARGE_OPS_DB_POOL_MAX_ACTIVE:30}
+      # 拿不到连接时最多等多久（毫秒）。
+      # ★ 不要设成 -1（无限等待）：那会让请求堆积而不是快速失败，
+      #   表现为「线程池被占满 → 整个应用不响应任何请求」，
+      #   包括 /actuator/health —— 于是健康检查也挂了，容器被反复重启，
+      #   而真正的原因（某条慢 SQL 占满了连接池）在重启后消失了。
+      max-wait: 3000
+
+      # 空闲连接保活。五个参数必须配套 —— 少一个就可能出现
+      # 「连接被数据库单方面断开，池子里还以为是好的」→ 请求时报
+      # Communications link failure，而重启应用就好了（因为重建了连接）。
+      # ★ 生产环境这个坑比开发环境更容易踩：中间隔了防火墙 / SLB，
+      #   它们通常会静默掐掉空闲超过若干分钟的长连接。
+      validation-query: SELECT 1
+      test-while-idle: true
+      test-on-borrow: false
+      test-on-return: false
+      # ★ time-between-eviction-runs-millis 必须**小于**
+      #   中间网络设备掐连接的时长，否则连接会在「还没被巡检到」的时候就已经死了
+      time-between-eviction-runs-millis: 60000
+      min-evictable-idle-time-millis: 300000
+
+      # ---------------- ★★ 这里刻意没有 stat-view-servlet ★★ ----------------
+      # Druid 监控页（http://host:port/druid/）在 dev 开着，生产必须关。
+      # 它会把**执行过的 SQL 连同参数**完整展示出来 ——
+      # 包括手机号、密码、金额，等于把整个数据库的查询日志暴露出去。
+      # 而它自带的那层登录只是一个写在配置文件里的弱口令。
+      #
+      # 不写这一段 = 不启用。Druid 的默认值就是关闭，所以「缺失」才是正确形态。
+      #
+      # 生产要监控慢 SQL 的话，用下面的 stat filter（它把慢 SQL 打进统一日志，
+      # 由日志平台管控访问权限），而**不是**把那个网页开出来。
+      #
+      # （可选）再加一层 SQL 防火墙挡住明显的注入 / 全表删除：
+      #   filter.wall.enabled: true
+      # ★ 它是有可能拦下正常 SQL 的（比如无 WHERE 的 DELETE 是业务需要时），
+      #   所以开启前要在一个预发环境把全部接口跑一遍。这里默认不开。
+      filter:
+        stat:
+          enabled: true
+          # ★ log-slow-sql 是**唯一**要在生产保留的 SQL 观测手段：
+          #   它只打超过阈值的那些，不打全部，所以不会把日志淹掉，
+          #   也不会有「把密码打进日志」的问题（Druid 对参数做了截断）
+          log-slow-sql: true
+          # 阈值按业务定。充电业务的接口都是「少表、走索引」的形状，
+          # 超过 1 秒的 SQL 基本可以确定是有问题的（锁等待或索引没走到），
+          # 不需要给报表类查询留太宽的余量 —— 那些查询应该是异步导出
+          slow-sql-millis: 1000
+
+  data:
+    redis:
+      host: ${CHARGE_OPS_REDIS_HOST}
+      port: ${CHARGE_OPS_REDIS_PORT}
+      # ★ 库号必须显式给，不要依赖默认的 0。
+      #   生产环境和别的应用共用一个 Redis 实例时，
+      #   库号是唯一的隔离手段（Redis 没有「库名」的概念）。
+      #   共用 db 0 的后果是两边的 key 互相覆盖 —— 连接全部成功、
+      #   没有任何报错，只有数据不对劲。
+      database: ${CHARGE_OPS_REDIS_DB}
+      password: ${CHARGE_OPS_REDIS_PASSWORD}
+      # 快速失败，不要无限等。Redis 挂掉时请求应该立刻报错，
+      # 而不是挂在那里占着 Tomcat 线程
+      timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: ${CHARGE_OPS_REDIS_POOL_MAX_ACTIVE:32}
+          max-idle: 16
+          min-idle: 4
+          max-wait: 3000ms
+
+# ============================================================================
+# JWT
+# ============================================================================
+chargeops:
+  jwt:
+    # ★★ 两个密钥都必须由环境变量提供，且**没有默认值** ★★
+    #
+    #   长度硬性要求：UTF-8 编码后 ≥ 32 字节（HS256 的要求，
+    #   见 application.yml 里那段说明和 JwtUtil 的显式校验）。
+    #   生成方式：
+    #       openssl rand -base64 48
+    #   不要用可读单词拼出来 —— 那类字符串在字典攻击下强度远低于它的长度暗示。
+    #
+    # ★ 这两把密钥必须是**不同**的，也不能和其他系统的密钥相同。
+    #   共用一把的话，车主端小程序一旦被逆向、密钥泄露，
+    #   攻击者就能签出一个 staffId=1 的 token 直接拿管理员权限。
+    admin-secret-key: ${CHARGE_OPS_JWT_ADMIN_SECRET}
+    member-secret-key: ${CHARGE_OPS_JWT_MEMBER_SECRET}
+
+    # 令牌有效期。生产的值可以按安全要求调整，所以留成可覆盖的
+    # 管理端 2 小时（内部人员使用，会话短一点更安全）
+    admin-ttl: ${CHARGE_OPS_JWT_ADMIN_TTL:7200000}
+    # 车主端 7 天（小程序，用户不希望在充电站现场被要求重新登录）
+    # ★ 这个值的长度是有代价的：JWT 无状态，服务端不保存会话，
+    #   所以「禁用账号」在 token 过期前不会自动生效。
+    #   缓解手段是业务端点在 Service 里重新查一次状态 ——
+    #   钱包和订单端点必须这么做，见 README 的「已知缺口」表
+    member-ttl: ${CHARGE_OPS_JWT_MEMBER_TTL:604800000}
+
+    # 请求头名字。前端和后端必须一致，不一致的表现是
+    # 「登录成功了，但下一个请求 401」，而两边都觉得自己是对的
+    admin-token-name: token
+    member-token-name: authentication
+
+  storage:
+    # 目前唯一实现了的是 local（写本地磁盘）。
+    # ★ 生产环境用 local 的前提是**有持久化卷**，
+    #   否则容器重启时上传的图片全部丢失，而数据库里的 URL 还在 ——
+    #   表现是「历史数据里的图片全是裂的」。
+    #   更稳的做法是换成对象存储（FileStorage 接口已经为此留好了扩展点：
+    #   实现一个新的 FileStorage Bean 即可，见 StorageConfiguration）。
+    type: ${CHARGE_OPS_STORAGE_TYPE:local}
+
+    # ★ 生产必须用**绝对路径**，而且必须落在持久化卷上。
+    #   相对路径会按「项目根目录」锚定（见 LocalFileStorage），
+    #   在容器里那个目录通常就是临时层，重启即失
+    local-dir: ${CHARGE_OPS_STORAGE_LOCAL_DIR}
+
+    # ★★ 这个值会被写进数据库 ★★
+    #   站点图片列、车主头像列存的是**完整 URL**，也就是这个前缀拼出来的。
+    #   所以换域名/上 HTTPS 时，光改这里不够 —— 数据库里的历史数据
+    #   还是旧前缀，得一起刷。这是「把可变的环境信息固化进业务数据」的代价
+    url-prefix: ${CHARGE_OPS_STORAGE_URL_PREFIX}
+
+    # 静态资源访问前缀。它同时被 LocalFileStorage（拼 URL）和
+    # WebMvcConfiguration（注册静态资源映射）使用，必须一致。
+    # ★ 不要配成 /api 开头 —— 那个前缀被 JWT 拦截器盯着，
+    #   图片会变成「必须登录才能看」，而静态资源请求不会带 token，
+    #   结果是图片全部裂掉，且日志里一条报错都没有
+    url-path: /img
+
+# ============================================================================
+# 接口文档（springdoc）—— 生产关闭
+# ============================================================================
+springdoc:
+  api-docs:
+    # ★ 关掉。它输出的是一份**完整、结构化、带参数示例**的接口清单 ——
+    #   对开发者是文档，对攻击者是一张地图：
+    #   哪些接口需要登录、参数长什么样、有没有内部管理端点，全都写好了。
+    #
+    #   而且 /v3/api-docs 是个纯 JSON 端点，**不需要认证**（springdoc 不走
+    #   我们的 JWT 拦截器，它挂载在 /v3/** 而不是 /api/**）。
+    #   整个 Spring 应用里最容易漏掉的未授权暴露就是它。
+    #
+    #   ★ 但这不代表生产就没办法调试 —— 把 swagger-ui 留在**预发环境**，
+    #     或者用同一份代码在本地起一个连生产库的只读实例。
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+# ============================================================================
+# 可观测性
+# ============================================================================
+management:
+  endpoint:
+    health:
+      # ★ 保持默认的 never。
+      #   show-details: always 会吐出数据库版本、Redis 版本、磁盘路径 ——
+      #   而 /actuator/health 通常是**不认证**的（容器探针、外部监控都要打它）。
+      #   它在 dev 开着，在这里必须关，理由同上。
+      #
+      # ★ 需要更细的健康检查（比如按组件做告警）时，正确做法是打开
+      #   health.probes（liveness / readiness 探针），而不是打开 details：
+      #     probes:
+      #       enabled: true
+      #   它只回 UP/DOWN，不泄露任何版本信息。
+      show-details: never
+
+# ★ 关于 management.endpoints.web.exposure.include：
+#   它写在 application.yml（环境无关）里，值是 health,info,metrics。
+#   ★ 如果生产要真的开放 metrics，**必须先加认证** ——
+#   /actuator/metrics 能推断出流量规模、接口热度、错误率，
+#   是一份相当精确的业务情报。
+#   只需 health 的话，在这里覆盖成：
+#     endpoints:
+#       web:
+#         exposure:
+#           include: health
+
+# ============================================================================
+# 日志
+# ============================================================================
+logging:
+  # ★ 写文件。容器环境下也可以只留 console 交给采集侧，
+  #   但如果容器没有配日志驱动，日志就真的没了 —— 所以两个都留
+  file:
+    name: ${CHARGE_OPS_LOG_FILE:/var/log/chargeops/chargeops.log}
+  level:
+    root: info
+    # ★ 不要在这里写 com.chargeops: debug。
+    #   生产环境的调试信息应该通过「临时调低某个包的级别 + 滚动重启」来做，
+    #   而不是常态开着 —— 常态开着的表现是日志量涨一到两个数量级，
+    #   真正的错误被冲掉，日志存储成本也上去
+  pattern:
+    # ★ 和生产日志采集配套：加 traceId（需要在代码里放 MDC，
+    #   见 P3 的可观测性）。
+    #   现在只有时间戳和线程名 —— 排查 ThreadLocal 串号问题时，
+    #   「同一个线程处理了两个请求」这条线索是必须能看到的
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

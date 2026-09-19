@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.chargeops.mapper.ConnectorMapper">
+
+    <!--
+      ★★ 这份 XML 与其它几份的关键区别：<b>没有 create_user / update_user</b>。
+
+      connector 表只有两个审计时间列。所以这里<b>不能</b>出现
+      #{createUser} / #{updateUser}，Mapper 接口上也<b>不能</b>标 @AutoFill ——
+      AutoFillInterceptor 反射找不到 setCreateUser(Long) 会直接抛
+      IllegalStateException，所有写操作当场炸掉。
+
+      create_time / update_time 由 ConnectorServiceImpl 显式 set 之后传进来。
+    -->
+    <sql id="Base_Column_List">
+        id, charger_id, station_id, gun_no, connector_type, rated_power_kw, status,
+        current_order_id, total_charge_count, version,
+        create_time, update_time
+    </sql>
+
+    <select id="getById" resultType="com.chargeops.entity.Connector">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM connector
+        WHERE id = #{id}
+    </select>
+
+    <!--
+      新增。
+
+      ★ 没有 current_order_id / total_charge_count / version ——
+        它们一律取 DDL 默认值（NULL / 0 / 0）。
+
+        这不是省事，是一个安全性设计：<b>P1a 不可能创建出一把已被占用的枪</b>。
+        current_order_id 归 P1c 的订单状态机，如果能从管理端的创建接口写进去，
+        就等于给「枪-订单互斥」这条唯一索引开了一个可以绕过的注入口。
+
+      ★ station_id 是冗余列（等于 charger.station_id），由 Service 从桩派生填入。
+        它 NOT NULL 且无默认值，所以必须在这里出现。
+    -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO connector (charger_id, station_id, gun_no, connector_type, rated_power_kw, status,
+                               create_time, update_time)
+        VALUES (#{chargerId}, #{stationId}, #{gunNo}, #{connectorType}, #{ratedPowerKw}, #{status},
+                #{createTime}, #{updateTime})
+    </insert>
+
+    <!--
+      更新，带乐观锁。
+
+      ★ WHERE 里的 AND version = #{version} 是承重的：
+        去掉它，这条 SQL 就变成一个普通的全列更新，
+        两个并发请求后到的那个会静默覆盖先到的 —— 没有任何报错。
+
+      ★ SET 里的 version = version + 1 在 SQL 侧算。
+        在 Java 侧算（先读 V、再写 V+1）的话，
+        「读出来的 V」和「写进去的 V+1」之间有一个窗口，
+        窗口里别人改了数据，写进去的版本号仍然是基于旧值的。
+
+      ★ ★ 这里没有 <if test="version != null"> —— version 是无条件出现在
+        WHERE 里的。如果版本号能缺省，这个乐观锁就是可选的，
+        而「可选的一致性保护」等于没有保护：调用方漏传一次就是一次静默覆盖。
+        漏传时 #{version} 绑成 NULL，`version = NULL` 恒不成立，
+        影响 0 行 → 上层报冲突。这是一个<b>保守的失败</b>，方向是对的。
+
+      ★ gun_no / connector_type / rated_power_kw / status 是管理员能改的全部。
+        charger_id 不在里面：把枪挪到别的桩会让 charger.gun_count
+        在两处同时失真，而且它历史上的订单会挂在一根不属于它的桩下面。
+        这个字段被<b>刻意排除在 DTO 之外</b>，所以编译期就改不了。
+    -->
+    <update id="update">
+        UPDATE connector
+        <set>
+            <if test="gunNo != null and gunNo != ''">gun_no = #{gunNo},</if>
+            <if test="connectorType != null and connectorType != ''">connector_type = #{connectorType},</if>
+            <if test="ratedPowerKw != null">rated_power_kw = #{ratedPowerKw},</if>
+            <if test="status != null">status = #{status},</if>
+            update_time = #{updateTime},
+            version = version + 1
+        </set>
+        WHERE id = #{id}
+          AND version = #{version}
+    </update>
+
+    <!--
+      分页查询。
+
+      ★ ORDER BY id DESC，理由见 StationMapper.xml。
+
+      ★ stationId 走 idx_connector_station_status 的第一列，
+        这正是「枪冗余一份 station_id」这个决定的回报 ——
+        不带这个冗余列的话，「这个站有哪些枪」每次都要 join charger。
+    -->
+    <select id="page" resultType="com.chargeops.entity.Connector">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM connector
+        <where>
+            <if test="stationId != null">
+                AND station_id = #{stationId}
+            </if>
+            <if test="chargerId != null">
+                AND charger_id = #{chargerId}
+            </if>
+            <if test="gunNo != null and gunNo != ''">
+                AND gun_no LIKE CONCAT('%', #{gunNo}, '%')
+            </if>
+            <if test="status != null">
+                AND status = #{status}
+            </if>
+        </where>
+        ORDER BY id DESC
+    </select>
+
+</mapper>

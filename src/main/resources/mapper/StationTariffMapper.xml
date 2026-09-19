@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.chargeops.mapper.StationTariffMapper">
+
+    <!--
+      ★ 本表四列审计字段齐全（create_user / update_user 都在），
+        所以 insert / update 可以标 @AutoFill —— 和 tariff_rule /
+        connector 相反。判断依据永远是「DDL 里有没有那两列」，不是「写操作就该标」。
+    -->
+    <sql id="Base_Column_List">
+        id, station_id, template_id, effective_from, effective_to,
+        priority, status,
+        create_time, update_time, create_user, update_user
+    </sql>
+
+    <select id="getById" resultType="com.chargeops.entity.StationTariff">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM station_tariff
+        WHERE id = #{id}
+    </select>
+
+    <!--
+      某站点的全部绑定。
+
+      ★ 不写 status 条件 —— 停用的绑定也要看得见，
+        「这个站点以前用过什么模板」只有这张表能回答。
+        见接口 listByStationId 的注释。
+
+      ★ ORDER BY effective_from DESC, id DESC：最近生效的排最前，
+        这正是运维打开这个页面想看的。id DESC 是同一时刻的 tiebreak
+        （虽然 uk_station_tariff_start 已保证同站同刻只有一条，
+        但排序键齐全总比依赖唯一约束更容易读懂）。
+    -->
+    <select id="listByStationId" resultType="com.chargeops.entity.StationTariff">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM station_tariff
+        WHERE station_id = #{stationId}
+        ORDER BY effective_from DESC, id DESC
+    </select>
+
+    <!--
+      ★★ 解析「某站点在某时刻该用哪个模板」—— P1c 下单时冻结模板调用的就是这条。
+
+      四个 WHERE 条件，列序刻意与
+      idx_station_tariff_lookup (station_id, status, effective_from, effective_to)
+      完全一致，好让优化器能一路用索引走下来。
+
+      ★ effective_to 那个 IS NULL 分支是承重的：NULL 表示「长期有效」，
+        而 `effective_to > ?` 对 NULL 求值是 NULL（不是 true），
+        少了这个 OR 分支，所有长期有效的绑定都会被静默排除掉 ——
+        表现是「种子里明明有一条长期绑定，解析却是 null」。
+
+      ★ ORDER BY 的三个键见接口注释：
+        priority DESC 是业务裁决，后两个让同优先级时的结果<b>确定</b>而不是随机。
+
+      ★ <b>不要在这条查询前调用 PageHelper.startPage。</b>
+        startPage 的参数放在 ThreadLocal 里、被本线程的下一条查询消费 ——
+        一旦被这条查询吃掉，它自己的 LIMIT 1 会被覆盖成一个分页 LIMIT，
+        解析结果就依赖「上一次翻页翻到了第几页」。
+        这是本项目里唯一一条<b>结果正确性依赖分页状态</b>的查询，
+        所以它必须远离任何 startPage。
+    -->
+    <select id="resolveTemplateAt" resultType="com.chargeops.entity.StationTariff">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM station_tariff
+        WHERE station_id = #{stationId}
+          AND status = 1
+          AND effective_from &lt;= #{at}
+          AND (effective_to IS NULL OR effective_to &gt; #{at})
+        ORDER BY priority DESC, effective_from DESC, id DESC
+        LIMIT 1
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO station_tariff (station_id, template_id, effective_from, effective_to,
+                                    priority, status,
+                                    create_time, update_time, create_user, update_user)
+        VALUES (#{stationId}, #{templateId}, #{effectiveFrom}, #{effectiveTo},
+                #{priority}, #{status},
+                #{createTime}, #{updateTime}, #{createUser}, #{updateUser})
+    </insert>
+
+    <!--
+      修改。
+
+      ★ <b>没有 station_id、没有 effective_from</b> —— 它们组成
+        uk_station_tariff_start，改了等于换掉这条绑定的身份。
+        见接口 update 的注释。
+
+      ★ effective_to 的 <if test="effectiveTo != null"> 有一个具体后果：
+        <b>没法把一条有期限的绑定改回「长期有效」（NULL）</b>。
+        反方向可以（NULL → 某个时间）。这是局部更新写法下的固有边界，
+        要撤销只能删掉重建。见 StationMapper.update 的说明。
+    -->
+    <update id="update">
+        UPDATE station_tariff
+        <set>
+            <if test="templateId != null">template_id = #{templateId},</if>
+            <if test="effectiveTo != null">effective_to = #{effectiveTo},</if>
+            <if test="priority != null">priority = #{priority},</if>
+            <if test="status != null">status = #{status},</if>
+            update_time = #{updateTime},
+            update_user = #{updateUser}
+        </set>
+        WHERE id = #{id}
+    </update>
+
+</mapper>

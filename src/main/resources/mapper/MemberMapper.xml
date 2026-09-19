@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.chargeops.mapper.MemberMapper">
+
+    <!--
+      ★ 这份 XML 里最要紧的一个决定：<sql id="Base_Column_List"> 里没有 password。
+
+      它被 getById / page / insert 的返回 / update 共用。
+      需要密码的两条路径（登录的 getByPhone、改密码的 getByIdWithPassword）
+      写在接口的 @Select 注解上，所以这条清单少一列不影响它们。
+
+      效果：只要走 XML 这条路，返回的 Member 对象里 password 恒为 null。
+      哪天有人写错了把一个实体直接返回给前端，泄露出去的也只是一个 null 字段。
+      —— 安全措施最好是「默认就安全」，而不是「靠自己记得」。
+    -->
+
+    <sql id="Base_Column_List">
+        id, phone, nickname, avatar, gender, status, last_login_time,
+        create_time, update_time, create_user, update_user
+    </sql>
+
+    <!--
+      不需要 <resultMap>：application.yml 里开了
+      mybatis.configuration.map-underscore-to-camel-case=true，
+      last_login_time 会自动映射到 lastLoginTime。
+
+      ★ 它只处理「下划线 → 驼峰」这一种差异，别的差异要写 resultMap。
+      P1c-1 不预写 resultMap，理由同 StaffMapper.xml：
+      它是一份要跟着表结构同步维护的清单，没有实际需要时写它
+      只是多一个会和 DDL 不一致的地方。
+    -->
+
+    <select id="getById" resultType="com.chargeops.entity.Member">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM member
+        WHERE id = #{id}
+    </select>
+
+    <!--
+      新增。useGeneratedKeys + keyProperty 把自增主键回填到对象的 id 属性。
+
+      ★ 审计四列不在这里写取值逻辑，由 AutoFillInterceptor 在语句执行前
+        填进对象，所以下面直接取 #{createTime} 这样的属性值。
+
+      ★★ 顺手纠正一个在 StaffMapper.xml / StationMapper.xml 里流传的说法：
+
+        那两处写「删掉 @AutoFill 不会报错，create_time 有 DEFAULT 会被填成
+        当前时间，只是 create_user 是 NULL，静默」。**这句话是错的。**
+
+        这两张表的 insert 都是全列插入，create_time 的列名**在语句里**，
+        而 SQL 的 DEFAULT 只在列**没出现在语句里**时才生效 ——
+        传 null 就是往 NOT NULL 列里显式写 NULL，MySQL 报 errno 1048，
+        **插入直接失败，非常响**（StationMapperTest 第一次跑时 9 个用例全红，
+        报的就是这个）。
+
+        真正静默的只有 create_user / update_user 这种**可空**的审计列：
+        它们会变成 NULL，插入成功，接口返回 200。
+
+        这个区别值得写清楚，因为它是「判断一个坑是响的还是哑的」的通用判据：
+        **看那一列的 DDL 是不是 NOT NULL。**
+        member 表这一对的对照很干净：create_time 是 NOT NULL → 响；
+        create_user 可空 → 哑。
+    -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO member (phone, password, nickname, avatar, gender, status, last_login_time,
+                            create_time, update_time, create_user, update_user)
+        VALUES (#{phone}, #{password}, #{nickname}, #{avatar}, #{gender}, #{status}, #{lastLoginTime},
+                #{createTime}, #{updateTime}, #{createUser}, #{updateUser})
+    </insert>
+
+    <!--
+      修改资料：<set> + <if> 只更新传了值的字段。
+
+      ★★ 注意这里**没有** phone、status、password 三列 —— 这是刻意的，
+         而且不是唯一的防线（另外两道在 DTO 和 Service 里）。
+         完整论证见 MemberMapper.update 的注释。
+
+      ★ <if> 的判断分两种，混用会出静默 bug：
+        - nickname / avatar 是 String，写 `!= null and != ''`：
+          空串和 null 都表示「不改」。若让空串能清空字段，
+          前端一次「表单没填」就会把用户的昵称抹掉。
+        - gender 是 Integer，**只能写 `!= null`**：
+          拿 Integer 和空串比较永远是 false，条件失效而 SQL 照常执行。
+          （gender 的合法值里有 0，所以不能像 status 那样想办法把 0
+           也当成「不传」——「没传」和「传了 0（未知）」必须区分开。）
+
+      ★ 审计两列无条件带上：它们一定非 null（AutoFillInterceptor 保证），
+        而且必须无条件写 —— 没改任何业务字段的一次 update 也应该让 update_time 前进。
+    -->
+    <update id="update">
+        UPDATE member
+        <set>
+            <if test="nickname != null and nickname != ''">nickname = #{nickname},</if>
+            <if test="avatar != null and avatar != ''">avatar = #{avatar},</if>
+            <if test="gender != null">gender = #{gender},</if>
+            update_time = #{updateTime},
+            update_user = #{updateUser}
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <!--
+      分页查询。
+
+      ★ ORDER BY id DESC 不是装饰，是分页正确性的前提 ——
+        没有 ORDER BY 时 MySQL 返回行的顺序是未定义的，翻页时会出现
+        「第 1 页的第 7 条在第 2 页又出现了一次」。完整解释见 StationMapper.xml。
+
+      ★ phone 用**前缀**匹配：手机号是从左往右敲的，
+        两侧 % 会让 uk_member_phone 完全用不上 ——
+        一个「按手机号搜」的入口却要走全表扫描，是不必要的。
+        （注意前缀匹配也不等于一定能用上索引，只有大小写敏感 +
+         无前导通配符时才可能；这里至少满足了后半条。）
+
+      ★ nickname 用**模糊**匹配：它是给人看的名字，客服记不全，只能模糊找。
+        它上面没有索引，所以这一条注定全表扫 ——
+        member 表在本阶段的量级下无所谓，真到需要优化时
+        该做的是搜索引擎而不是给 nickname 加索引
+        （前缀索引对「中间匹配」无效）。
+
+      ★ status 精确匹配，条件只能写 != null
+        （Integer 和空串比较恒为 false，是个不会报错的坑）。
+    -->
+    <select id="page" resultType="com.chargeops.entity.Member">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM member
+        <where>
+            <if test="phone != null and phone != ''">
+                AND phone LIKE CONCAT(#{phone}, '%')
+            </if>
+            <if test="nickname != null and nickname != ''">
+                AND nickname LIKE CONCAT('%', #{nickname}, '%')
+            </if>
+            <if test="status != null">
+                AND status = #{status}
+            </if>
+        </where>
+        ORDER BY id DESC
+    </select>
+
+</mapper>

@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.chargeops.mapper.ChargerMapper">
+
+    <!--
+      ★ 注意这里没有 gun_count 之外的任何冗余列，也没有 station_name。
+        桩列表要显示站名，但那是 charger 表里没有的 —— 由 Service 查完
+        再调 StationMapper.listByIds 批量补上，不在这里 join。
+
+        为什么不 join：join 会让「分页」这件事变复杂（LIMIT 作用在
+        连接后的行集上，而 charger:station 是多对一，不会放大行数，所以
+        这次 join 其实是安全的）。真正的理由是职责 —— 这个 Mapper
+        只负责 charger 一张表，加了 join 之后任何关于 station 的查询变化
+        都会波及这里。
+    -->
+    <sql id="Base_Column_List">
+        id, station_id, device_no, name, type, model, rated_power_kw, gun_count, status,
+        last_heartbeat_time, firmware_version,
+        create_time, update_time, create_user, update_user
+    </sql>
+
+    <select id="getById" resultType="com.chargeops.entity.Charger">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM charger
+        WHERE id = #{id}
+    </select>
+
+    <!--
+      新增。
+
+      ★★ 【全表通用的一条规则】凡是 NOT NULL 的列，实体里必须有值。
+
+        DDL 的 DEFAULT 只在**该列没有出现在 INSERT 语句里**时生效。
+        这几条 insert 都是全列插入，列名在语句里，所以传 null 就是往
+        NOT NULL 列里显式写 NULL —— MySQL 报 errno 1048，
+        **不会**静默使用默认值。已真机验证过这一对行为：
+          INSERT INTO t (a) VALUES (NULL)      → ERROR 1048
+          INSERT INTO t (a) VALUES (DEFAULT)   → 用上默认值
+
+        这个坑在本次集成测试里【连踩三次】（station.open_time、
+        charger.rated_power_kw、charger.gun_count），所以它不是巧合，
+        是「全列插入」这个约定和「DDL 写 DEFAULT」之间的系统性摩擦。
+        结论是：**别把 DDL 的 DEFAULT 当成能被依赖的保证**，
+        「不填会怎样」由 DTO 的字段初始值决定并写进 Swagger，
+        DDL 的 DEFAULT 只留给手工 SQL 兜底。
+
+      ★★ gun_count 在这里【必须显式给出】，而且 Service 应该给 0 ——
+        不是 DDL 默认的 1。
+
+        为什么不用 DDL 的 1：「冗余自 connector」这个注释说明了它的
+        事实来源是 connector 表。刚建好的桩一把枪都没有，真实值是 0；
+        默认值 1 是给「一桩一枪」这个常见情况省事的近似，
+        代价是**列表页会显示一个不存在的枪**，一直到有人加枪或数枪才发现。
+        「近似但错的值」不如「暂时不完整但正确」，
+        第一把枪被加上时 refreshGunCount 会把它刷成精确值。
+    -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO charger (station_id, device_no, name, type, model, rated_power_kw, gun_count, status,
+                             last_heartbeat_time, firmware_version,
+                             create_time, update_time, create_user, update_user)
+        VALUES (#{stationId}, #{deviceNo}, #{name}, #{type}, #{model}, #{ratedPowerKw}, #{gunCount}, #{status},
+                #{lastHeartbeatTime}, #{firmwareVersion},
+                #{createTime}, #{updateTime}, #{createUser}, #{updateUser})
+    </insert>
+
+    <!--
+      修改。
+
+      ★★ <b>两个字段被刻意排除，理由都是「改了会让别处的数据失真」：</b>
+
+        1) <b>gun_count</b> —— 它不是客户端能设的字段，只由
+           ConnectorService 在枪增删时调 refreshGunCount 重算。
+           放进 <set> 就等于给冗余列开了第二条写入路径，而两条路径迟早不一致。
+           （ChargerMapperTest 里有一条断言专门传了 gun_count=99 进去，
+             验的就是它不会被写进去。）
+
+        2) <b>station_id</b> —— 把一根桩挪到别的站点，
+           它的每一把枪的 station_id 都还指着**老站点**。
+           而 connector.station_id 是 DDL 明写的冗余列，
+           「某站点所有枪」的查询直接走它（idx_connector_station_status），
+           所以挪完之后那个查询会返回一批挂在不存在的站点关系下的枪。
+
+           ★ 这是本项目里冗余列代价最大的一处：它横跨两张表，
+             要修必须 charger 和它的全部 connector 在同一个事务里一起改。
+             那是一个独立的「搬迁」操作（要有自己的接口和审计），
+             不是「按主键更新非空字段」顺带能做的事 ——
+             所以这个字段<b>不在 DTO 里</b>，编译期就改不了。
+
+           ★ 代价是：桩登记错站点时只能删掉重建。
+             它的枪会跟着一起没（虽然枪不会被级联删，但会变成孤儿），
+             所以运维要先确认那根桩没有被在途订单占用。
+
+      ★ status / type 是 Integer，判断只能写 != null。
+    -->
+    <update id="update">
+        UPDATE charger
+        <set>
+            <if test="deviceNo != null and deviceNo != ''">device_no = #{deviceNo},</if>
+            <if test="name != null and name != ''">name = #{name},</if>
+            <if test="type != null">type = #{type},</if>
+            <if test="model != null and model != ''">model = #{model},</if>
+            <if test="ratedPowerKw != null">rated_power_kw = #{ratedPowerKw},</if>
+            <if test="status != null">status = #{status},</if>
+            <if test="lastHeartbeatTime != null">last_heartbeat_time = #{lastHeartbeatTime},</if>
+            <if test="firmwareVersion != null and firmwareVersion != ''">firmware_version = #{firmwareVersion},</if>
+            update_time = #{updateTime},
+            update_user = #{updateUser}
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <!--
+      分页查询。
+
+      ★ ORDER BY id DESC，理由见 StationMapper.xml 里的同名注释：
+        没有 ORDER BY 时行序未定义，翻页会出现重复或漏行。
+
+      ★ stationId 精确匹配走 idx_charger_station_status 的第一列；
+        deviceNo 用前缀匹配（LIKE 'xxx%'）而不是两侧加 % ——
+        设备号是运维报障时的搜索入口，前缀匹配能用上
+        uk_charger_device_no 索引，而 %xxx% 只能全表扫。
+    -->
+    <select id="page" resultType="com.chargeops.entity.Charger">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM charger
+        <where>
+            <if test="stationId != null">
+                AND station_id = #{stationId}
+            </if>
+            <if test="deviceNo != null and deviceNo != ''">
+                AND device_no LIKE CONCAT(#{deviceNo}, '%')
+            </if>
+            <if test="name != null and name != ''">
+                AND name LIKE CONCAT('%', #{name}, '%')
+            </if>
+            <if test="type != null">
+                AND type = #{type}
+            </if>
+            <if test="status != null">
+                AND status = #{status}
+            </if>
+        </where>
+        ORDER BY id DESC
+    </select>
+
+</mapper>
