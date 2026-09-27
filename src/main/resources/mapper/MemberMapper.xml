@@ -4,15 +4,11 @@
 <mapper namespace="com.chargeops.mapper.MemberMapper">
 
     <!--
-      ★ 这份 XML 里最要紧的一个决定：<sql id="Base_Column_List"> 里没有 password。
+      Base_Column_List 里没有 password。需要密码的两条路径（登录的 getByPhone、
+      改密码的 getByIdWithPassword）写在接口的 @Select 上，所以这里少一列不影响它们。
 
-      它被 getById / page / insert 的返回 / update 共用；需要密码的两条路径
-      （登录的 getByPhone、改密码的 getByIdWithPassword）写在接口的 @Select 上，
-      所以这条清单少一列不影响它们。
-
-      效果：只要走 XML 这条路，返回的 Member 对象里 password 恒为 null ——
-      哪天有人写错了把一个实体直接返回给前端，泄露出去的也只是一个 null 字段。
-      —— 安全措施最好是「默认就安全」，而不是「靠自己记得」。
+      效果：只要走 XML 这条路，返回的 Member 里 password 恒为 null —— 哪天有人把实体
+      直接返回给前端，泄露出去的也只是一个 null 字段。
     -->
 
     <sql id="Base_Column_List">
@@ -21,11 +17,8 @@
     </sql>
 
     <!--
-      不需要 <resultMap>：application.yml 里开了 map-underscore-to-camel-case=true，
-      last_login_time 会自动映射到 lastLoginTime。
-
-      ★ 不预写 resultMap（理由同 StaffMapper.xml）：它是一份要跟着表结构同步维护的
-        清单，没有实际需要时写它只是多一个会和 DDL 不一致的地方。
+      不写 <resultMap>：application.yml 里开了 map-underscore-to-camel-case=true，
+      last_login_time 会自动映射到 lastLoginTime。理由同 StaffMapper.xml。
     -->
 
     <select id="getById" resultType="com.chargeops.entity.Member">
@@ -36,14 +29,12 @@
     </select>
 
     <!--
-      ★ 审计四列不在这里写取值逻辑，由 AutoFillInterceptor 在语句执行前填进对象，
-        所以下面直接取 #{createTime} 这样的属性值。
+       审计四列由 AutoFillInterceptor 在语句执行前填进对象，所以下面直接取
+       #{createTime} 这样的属性值。
 
-      ★★ 删掉接口上的 @AutoFill 的后果（判断一个坑是响的还是哑的，通用判据是
-         **看那一列的 DDL 是不是 NOT NULL**）：全列插入时 create_time 的列名在语句里，
-         传 null 就是往 NOT NULL 列里显式写 NULL → MySQL 报 errno 1048，
-         **插入直接失败，非常响**。真正静默的只有 create_user / update_user 这种
-         **可空**的列（变成 NULL，插入成功，接口返回 200）。
+       删掉接口上的 @AutoFill 的后果是响的：全列插入时 create_time 的列名在语句里，
+       传 null 就是往 NOT NULL 列里显式写 NULL → errno 1048。真正静默的只有
+       create_user / update_user 这种可空列。
     -->
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO member (phone, password, nickname, avatar, gender, status, last_login_time,
@@ -53,17 +44,14 @@
     </insert>
 
     <!--
-      ★★ 这里**没有** phone、status、password 三列 —— 刻意的，而且不是唯一的防线
-         （另外两道在 DTO 和 Service 里）。完整论证见 MemberMapper.update 的注释。
+       没有 phone、status、password 三列 —— 刻意的，另外两道防线在 DTO 和 Service 里。
 
-      ★ <if> 的判断分两种，混用会出静默 bug：
-        - nickname / avatar 是 String，写 `!= null and != ''`：空串和 null 都表示
-          「不改」。若让空串能清空字段，前端一次「表单没填」就会把昵称抹掉。
-        - gender 是 Integer，**只能写 `!= null`**（和空串比较恒为 false，条件失效而
-          SQL 照常执行）。gender 的合法值里有 0，所以不能把 0 也当成「不传」——
-          「没传」和「传了 0（未知）」必须区分开。
+       <if> 的判断分两种：nickname / avatar 是 String，写 `!= null and != ''`，空串和
+       null 都表示「不改」（让空串能清空字段的话，前端一次表单没填就会把昵称抹掉）。
+       gender 是 Integer，只能写 `!= null`，而且它的合法值里有 0，所以不能把 0 也
+       当成「不传」。
 
-      ★ 审计两列无条件带上：没改任何业务字段的一次 update 也应该让 update_time 前进。
+       审计两列无条件带上：没改任何业务字段的一次 update 也应该让 update_time 前进。
     -->
     <update id="update">
         UPDATE member
@@ -78,17 +66,12 @@
     </update>
 
     <!--
-      ★ ORDER BY id DESC 是分页正确性的前提，理由见 StationMapper.xml。
+       ORDER BY id DESC 是分页正确性的前提，理由见 StationMapper.xml。
 
-      ★ phone 用**前缀**匹配：手机号是从左往右敲的，两侧 % 会让 uk_member_phone
-        完全用不上 —— 一个「按手机号搜」的入口却要走全表扫描，是不必要的。
-        （前缀匹配也不等于一定能用上索引，只有大小写敏感 + 无前导通配符时才可能。）
+       phone 用前缀匹配，两侧 % 会让 uk_member_phone 完全用不上；nickname 没有索引，
+       模糊匹配注定全表扫，member 表的量级下无所谓。
 
-      ★ nickname 用**模糊**匹配：客服记不全，只能模糊找。它上面没有索引，
-        所以这一条注定全表扫 —— member 表的量级下无所谓，
-        真到需要优化时该做的是搜索引擎而不是给 nickname 加索引。
-
-      ★ status 精确匹配，条件只能写 != null（Integer 和空串比较恒为 false）。
+       status 是 Integer，条件只能写 != null。
     -->
     <select id="page" resultType="com.chargeops.entity.Member">
         SELECT
@@ -109,19 +92,12 @@
     </select>
 
     <!--
-      ★★ 这里**没有**对空集合的保护，而 SQL 层也做不出保护。★★
+       这里没有对空集合的保护，SQL 层也做不出保护：`IN ()` 是语法错误，MyBatis 会拼出
+       一个缺了括号体的 `IN`，MySQL 报 errno 1064 —— 而触发条件（这一页一条订单都没有）
+       看起来跟 SQL 毫无关系。所以调用方必须先判空。
 
-        `IN ()` 是语法错误，MyBatis 会拼出一个缺了括号体的 `IN`，
-        MySQL 报 errno 1064。那个异常会被兜底 handler 接住变成「未知错误」，
-        而触发条件（这一页一条订单都没有）看起来跟 SQL 毫无关系。
-
-        所以调用方必须先判空 —— 见 MemberMapper#listByIds 的注释。
-        ★ 不要试图在这里用 <if> 把它变成「不传就查全部」：
-          **「查不到人」和「不过滤」是两件相反的事**，
-          前者要返回空结果，后者会返回全表。
-          那正是「按手机号搜订单」搜到一个不存在的号却列出全部订单的形状。
-
-      ★ 仍然用 Base_Column_List：返回的 Member 里 password 恒为 null。
+       不要用 <if> 把它变成「不传就查全部」：「查不到人」和「不过滤」是两件相反的事，
+       后者会返回全表。
     -->
     <select id="listByIds" resultType="com.chargeops.entity.Member">
         SELECT
@@ -134,19 +110,12 @@
     </select>
 
     <!--
-      ★ 只取 id，不取整行 —— 这个结果会被拼成一个 IN 列表发给订单查询，
-        几十万行的 Member 对象在内存里是这个数字的十几倍。
+       只取 id 不取整行：这个结果会被拼成一个 IN 列表发给订单查询。
 
-      ★ 前缀匹配走 uk_member_phone，理由同上面的 page。
-
-      ★ LIMIT 是**必须**的，不是优化。取到 limit 条时调用方的结论是
-        「拒绝这次查询」而不是「就这么多」—— 完整论证见接口注释。
-
-      ★ 排序：前缀匹配会有多行，而调用方要判断的是「是不是正好取满了」，
-        与顺序无关，所以**不加 ORDER BY**。加了反而要给 uk_member_phone
-        之外的一棵临时排序，白白多一次 filesort。
-        ★ 这是本文件里唯一一个有意不写 ORDER BY 的查询，
-          不要照着它去改别的查询。
+       LIMIT 是必须的，不是优化：取到 limit 条时调用方的结论是「拒绝这次查询」而不是
+       「就这么多」。前缀匹配会有多行，而调用方判断的是「是不是正好取满了」，与顺序
+       无关，所以不加 ORDER BY —— 这是本文件唯一一个有意不写的查询，不要照着它去改
+       别的查询。
     -->
     <select id="listIdsByPhonePrefix" resultType="java.lang.Long">
         SELECT id

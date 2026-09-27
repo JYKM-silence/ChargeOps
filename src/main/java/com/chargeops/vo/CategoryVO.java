@@ -11,28 +11,28 @@ import java.time.LocalDateTime;
  *
  * <p>{@code /api/admin/category/**} 的读接口都返回它。
  *
- * <h2>★ 一、两个派生标签，都是「读路径降级」</h2>
+ * 一、两个派生标签，都是「读路径降级」
  *
  * <p>{@code typeLabel} 和 {@code statusLabel} 都由 Service 派生，并在派生失败时
- * <b>返回 null 而不是抛异常</b>（照 {@code StationServiceImpl.labelOf} 的做法）。
- * 理由：这两个字段是<b>给人看的装饰</b>，不是业务数据。一行脏数据（比如 {@code type = 7}）
+ * 返回 null 而不是抛异常（照 {@code StationServiceImpl.labelOf} 的做法）。
+ * 理由：这两个字段是给人看的装饰，不是业务数据。一行脏数据（比如 {@code type = 7}）
  * 不该让整个分类列表 500 —— 那会把一个「显示不出标签」的小问题升级成
  * 「管理端打不开」的大问题，而出脏数据时恰恰是管理员最需要打开这个页面去修它。
  *
- * <p>★ 反过来，<b>写路径是严格的</b>：{@code CategoryServiceImpl.create} 会直接用
+ * <p> 反过来，写路径是严格的：{@code CategoryServiceImpl.create} 会直接用
  * {@code CategoryType.of(type)} 并在值非法时抛 {@code ParamErrorException}。
  * 写的时候不许脏，读的时候容忍脏，这条分工是全项目统一的。
  *
- * <h2>★ 二、{@code statusLabel} 的措辞是「启用 / 停用」，不是「上架 / 下架」</h2>
+ * 二、{@code statusLabel} 的措辞是「启用 / 停用」，不是「上架 / 下架」
  *
  * <p>虽然语义相近，但 {@code charge_package.status} 用的是「上架 / 下架」（那是一个商品），
- * 而分类是<b>配置</b>。措辞不一致会让前端以为要区分两套状态机，这里对齐 DDL 里的用词。
+ * 而分类是配置。措辞不一致会让前端以为要区分两套状态机，这里对齐 DDL 里的用词。
  *
- * <h2>★ 三、没有「该分类下的套餐数」</h2>
+ * 三、没有「该分类下的套餐数」
  *
  * <p>这个数字在管理端列表页上会很有用（「这个分类能删吗」），但它需要一次额外的
- * {@code GROUP BY} 查询。★ <b>将来要加的话有一个具体的坑</b>：那条补充查询必须放在
- * {@code PageHelper.startPage} 之后的那条查询<b>之后</b>，否则它会吃掉 ThreadLocal 里的
+ * {@code GROUP BY} 查询。 将来要加的话有一个具体的坑：那条补充查询必须放在
+ * {@code PageHelper.startPage} 之后的那条查询之后，否则它会吃掉 ThreadLocal 里的
  * 分页参数 —— 表现是分类列表返回全表而那条 COUNT 被 LIMIT 10。
  * 完整的机制解释见 {@code ChargerServiceImpl} 的富化逻辑。
  */

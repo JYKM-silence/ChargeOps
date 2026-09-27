@@ -9,17 +9,17 @@
     </sql>
 
     <!--
-      ★★ 撞 uk_event_idempotent (idempotent_key) 时**不能 catch**。★★
-        它能被撞到说明「先用订单状态的条件更新判断这一步做没做过」那道防线漏了；
-        而 DuplicateKeyException 抛出那一刻事务已经被 Spring 标记成 rollback-only，
-        catch 住再正常 return，提交时仍然会失败 —— 只是失败位置从「插入这里」
-        挪到了「提交那里」，排查时会看到一个和真正原因毫无关系的报错。
+       撞 uk_event_idempotent (idempotent_key) 时不能 catch。它能被撞到说明「先用订单
+       状态的条件更新判断这一步做没做过」那道防线漏了；而 DuplicateKeyException 抛出
+       那一刻事务已经被 Spring 标成 rollback-only，catch 住再正常 return，提交时仍然
+       会失败 —— 只是失败位置从「插入这里」挪到了「提交那里」，排查时看到的报错和真正
+       原因毫无关系。
 
-      ★ idempotent_key 为 NULL 的行不受唯一约束（MySQL 唯一索引不约束 NULL），
-        所以「用户取消」「定时任务结算」这些非设备来源的事件不受影响。
+       idempotent_key 为 NULL 的行不受唯一约束（MySQL 唯一索引不约束 NULL），所以
+       「用户取消」「定时任务结算」这些非设备来源的事件不受影响。
 
-      ★ 本表没有 create_user 列，所以也用不了 @AutoFill；操作人记在 operator_id
-        （「谁触发了这次流转」），设备上报时为 NULL。
+       本表没有 create_user 列，也用不了 @AutoFill；操作人记在 operator_id，设备上报
+       时为 NULL。
     -->
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO charging_order_event (order_id, from_status, to_status, event_type, source,
@@ -29,10 +29,8 @@
     </insert>
 
     <!--
-      ★ **升序**，和 pageByMember 的倒序相反：排查时要读的是「先发生什么、后发生什么」。
-
-      ★ 末尾补 id ASC 保证全序 —— 同一毫秒的两条事件（比如「取消」和它引发的
-        「解冻」）必须有一致的相对顺序。
+       升序，和 pageByMember 的倒序相反：排查时要读的是「先发生什么、后发生什么」。
+       末尾补 id ASC 保证全序 —— 同一毫秒的两条事件必须有一致的相对顺序。
     -->
     <select id="listByOrderId" resultType="com.chargeops.entity.ChargingOrderEvent">
         SELECT

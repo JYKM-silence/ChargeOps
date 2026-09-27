@@ -17,42 +17,42 @@ import java.time.LocalDateTime;
  * 三种匹配方式（标识走前缀 / 名字走模糊 / 枚举走精确）的对照表见
  * {@code MemberPageQueryDTO} 的类注释。
  *
- * <h2>★★ 一、这个 DTO 是补上一个真实缺口的 —— 它不是「顺手加的查询」★★</h2>
+ * 一、这个 DTO 是补上一个真实缺口的 —— 它不是「顺手加的查询」
  *
- * <p>在它之前，{@code /api/admin/**} 下<b>没有任何订单查询接口</b>：
+ * <p>在它之前，{@code /api/admin/**} 下没有任何订单查询接口：
  * {@code OrderAdminController} 只有 {@code start} / {@code end} / {@code settle} /
- * {@code refund} 四个<b>操作</b>接口，而它们全都要求一个 {@code {id}}。
- * 于是管理端出现了一个闭环的死角 —— <b>四个按钮都在，但没有一个页面能列出订单，
- * 因而拿不到那个 id</b>。运维只能靠车主截图报单号，或者直接查库。
+ * {@code refund} 四个操作接口，而它们全都要求一个 {@code {id}}。
+ * 于是管理端出现了一个闭环的死角 —— 四个按钮都在，但没有一个页面能列出订单，
+ * 因而拿不到那个 id。运维只能靠车主截图报单号，或者直接查库。
  *
- * <p>★ 这一条和「少个筛选条件」不是一回事：它让充电链路在管理端<b>整条不可达</b>。
+ * <p> 这一条和「少个筛选条件」不是一回事：它让充电链路在管理端整条不可达。
  * 前端第一次做订单管理页时撞上的就是这个。
  *
- * <h2>★ 二、{@code orderNo} 用前缀匹配，而不是精确匹配</h2>
+ * 二、{@code orderNo} 用前缀匹配，而不是精确匹配
  *
- * <p>运维手上通常是一个<b>完整</b>的订单号（从车主截图、客服工单、日志里来），
+ * <p>运维手上通常是一个完整的订单号（从车主截图、客服工单、日志里来），
  * 这时候 {@code LIKE 'SO-20260920-abc%'} 和 {@code = } 等价，不多一次全表扫
  * （{@code uk_order_no} 前缀可用）。但反过来，客服拿着半截单号
- * （{@code SO-2026092}）来问「今天这批单子怎么样了」时，精确匹配<b>返回空</b>，
- * 而前缀匹配能列出来。<b>一个更宽松的匹配在完整输入下不多花任何代价</b>，
+ * （{@code SO-2026092}）来问「今天这批单子怎么样了」时，精确匹配返回空，
+ * 而前缀匹配能列出来。一个更宽松的匹配在完整输入下不多花任何代价，
  * 所以选它。
  *
- * <p>★ 不加两侧 {@code %}：订单号是<b>从左往右敲</b>的标识，理由同
+ * <p> 不加两侧 {@code %}：订单号是从左往右敲的标识，理由同
  * {@code MemberPageQueryDTO.phone}。中间匹配在这里除了让索引失效之外，
  * 没有任何真实的使用场景。
  *
- * <h2>★★ 三、时间范围是可选的，而「什么都不传」是一次全表扫描 ★★</h2>
+ * 三、时间范围是可选的，而「什么都不传」是一次全表扫描 
  *
- * <p>排序是 {@code create_time DESC}。这个排序只在<b>带了 {@code status} 时</b>
+ * <p>排序是 {@code create_time DESC}。这个排序只在带了 {@code status} 时
  * 能由 {@code idx_order_status_create (status, create_time)} 直接给出；
- * <b>不带任何条件时</b>，MySQL 必须扫全表再 filesort。
+ * 不带任何条件时，MySQL 必须扫全表再 filesort。
  *
- * <p>★ <b>这个取舍是有意的，但使用方要知道</b>：订单表是全项目唯一会持续增长的
+ * <p> 这个取舍是有意的，但使用方要知道：订单表是全项目唯一会持续增长的
  * 大表，百万行时「不带条件的管理端订单列表」会变慢。所以
- * <b>{@code createTimeFrom} / {@code createTimeTo} 不是装饰</b> ——
+ * {@code createTimeFrom} / {@code createTimeTo} 不是装饰 ——
  * 前端应当默认帮运维带上「最近 7 天」，而不是打开页面就裸查。
  *
- * <p>★ <b>不为此加索引</b>：{@code charging_order} 已经有
+ * <p> 不为此加索引：{@code charging_order} 已经有
  * {@code idx_order_status_create} / {@code idx_order_member_create} /
  * {@code idx_order_station_create} 三棵以 {@code create_time} 收尾的索引，
  * 再加一棵纯 {@code create_time} 的 B+ 树，代价是每次订单写入都多维护一棵 ——
@@ -68,7 +68,7 @@ public class AdminOrderPageQueryDTO implements Serializable {
     @Min(value = 1, message = "页码不能小于 1")
     private Integer pageNum = 1;
 
-    /** ★ {@code @Max(100)} 是唯一挡住 {@code ?pageSize=1000000} 的东西 */
+    /**  {@code @Max(100)} 是唯一挡住 {@code ?pageSize=1000000} 的东西 */
     @Schema(description = "每页条数，最大 100", example = "10")
     @Min(value = 1, message = "每页条数不能小于 1")
     @Max(value = 100, message = "每页条数不能超过 100")
@@ -85,15 +85,15 @@ public class AdminOrderPageQueryDTO implements Serializable {
     private Long stationId;
 
     /**
-     * ★ 车主手机号，<b>前缀匹配</b>，理由同 {@code MemberPageQueryDTO.phone}。
+     * 车主手机号，前缀匹配，理由同 {@code MemberPageQueryDTO.phone}。
      *
-     * <p>★★ 它<b>不</b>参与订单表的 SQL —— Service 会先拿它去 {@code member} 表
+     * <p> 它不参与订单表的 SQL —— Service 会先拿它去 {@code member} 表
      * 查出 id 列表，再让订单查询按 {@code member_id IN (...)} 收窄。
      * 把 {@code LIKE} 直接写进订单查询的 {@code JOIN} 里也能出结果，
      * 但那样「按手机号搜订单」会变成扫全表订单再逐行回表比对手机号；
      * 先查 member 走的是 {@code uk_member_phone} 的前缀，是另一个量级。
      *
-     * <p>★ 代价是<b>前缀命中的车主过多时 {@code IN} 列表会很长</b>。
+     * <p> 代价是前缀命中的车主过多时 {@code IN} 列表会很长。
      * 这不是问题：手机号前缀 {@code 138} 也就命中几千行，而运维真正会敲的
      * {@code 1380000} 通常只命中个位数 —— 一个「按手机号搜」的入口，
      * 用户给的本就是足以定位的前缀。
@@ -102,11 +102,11 @@ public class AdminOrderPageQueryDTO implements Serializable {
     private String memberPhone;
 
     /**
-     * ★ 格式必须显式声明：这个参数走 query string，而 Spring 默认只认 ISO 8601
+     * 格式必须显式声明：这个参数走 query string，而 Spring 默认只认 ISO 8601
      * （{@code 2026-09-20T00:00:00}），和本项目全局对外的
      * {@code yyyy-MM-dd HH:mm:ss} 不是一套。不写 {@code @DateTimeFormat}
      * 的话，前端按项目惯例传 {@code 2026-09-20 00:00:00} 会得到一个
-     * <b>参数类型不匹配</b> —— 而它会被兜底成「未知错误」，
+     * 参数类型不匹配 —— 而它会被兜底成「未知错误」，
      * 排查成本高（见 README 缺口表里那条 4xx 兜底）。
      */
     @Schema(description = "建单时间起（含），格式 yyyy-MM-dd HH:mm:ss", example = "2026-09-01 00:00:00")

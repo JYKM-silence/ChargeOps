@@ -1,124 +1,43 @@
-# ============================================================================
-# 开发环境配置（application-dev.yml）
-# ============================================================================
-# 只放「连哪里」这一类会随环境变化的东西。全部写成 ${环境变量:默认值} 的形式，
-# 想覆盖任何一项都不用改这个文件：
-#   Git Bash : CHARGE_OPS_DB_PORT=13306 mvn spring-boot:run
-#   VS Code  : launch.json 的 env 里加
-#   CMD      : set CHARGE_OPS_DB_PORT=13306 && mvn spring-boot:run
+# 开发环境配置。全部写成 ${环境变量:默认值}，想覆盖任何一项都不用改这个文件。
 #
-# ★★ 本机有两条可选的依赖路径，默认走第一条 ★★
+# 本机两条可选的依赖路径，默认走 A：
+#   A 本机已装的 MySQL80 + E:\redis    MySQL localhost:3306 库 chargeops  Redis localhost:6379 db 1
+#   B docker compose（项目根目录）      MySQL localhost:13306 库 chargeops Redis localhost:16379 db 0
+#   切到 B：CHARGE_OPS_DB_PORT=13306 CHARGE_OPS_REDIS_PORT=16379 CHARGE_OPS_REDIS_DB=0 mvn spring-boot:run
 #
-#   路径 A：本机已装的 MySQL80 服务 + E:\redis 里的 Redis（**当前默认**）
-#       MySQL  localhost:3306   库名 chargeops
-#       Redis  localhost:6379   库号 **1**
-#       不需要 Docker，开箱即用
-#
-#   路径 B：docker compose（项目根目录的 docker-compose.yml）
-#       MySQL  localhost:13306  库名 chargeops
-#       Redis  localhost:16379  库号 0
-#       切换方式：CHARGE_OPS_DB_PORT=13306 CHARGE_OPS_REDIS_PORT=16379 \
-#                 CHARGE_OPS_REDIS_DB=0 mvn spring-boot:run
-#
-# ★★ 两条路径下「怎么和老项目分开」靠的都是**库名/库号**，不是端口 ★★
-#
-#   本机上另一个项目也在用 3306 和 6379，所以端口是共用的。
-#   真正防止串数据的是这两件事：
-#
-#     MySQL —— 库名不同（chargeops vs sky_take_out）。
-#              这才是关键。如果端口错开了但库名一样，忘关老项目时会
-#              「新项目往另一个项目的表里插数据」—— 而且因为连接是成功的，
-#              不会有任何报错，只有数据不对劲，极难排查。
-#
-#     Redis —— **库号不同（1 vs 0）**。
-#              Redis 没有「库名」这个概念，只有 0~15 的编号，
-#              所以这里是唯一能把两边隔开的手段。
-#              ★ 这一条必须做，不能图省事共用 db 0：两边都用 `chat:session:`
-#                这个 key 前缀（ChargeOps 的 AI 客服沿用老项目的命名），
-#                共用 db 0 会互相覆盖对方的会话数据。
-#                表现是「聊了两句，上下文突然串到另一个人去了」。
-#
-#   应用端口 8081（老项目 8080）也没变 —— 这个确实需要错开，
-#   否则两个应用不能同时启动，报的是「端口被占用」，一眼能看出来。
-# ============================================================================
+# 两条路径下隔开两个项目的都是库名和 Redis 库号，不是端口：本机上另一个项目也用 3306/6379。
+# 端口错开而库名一样时会「往另一个项目的表里插数据」，且连接是成功的、没有任何报错。
 
 spring:
   datasource:
     druid:
       driver-class-name: com.mysql.cj.jdbc.Driver
 
-      # ★ 连接串里的四个参数，每一个都有具体的理由：
+      # 连接串里几个不能少的东西：useUnicode + characterEncoding=utf8 保证中文参数不乱码；
+      # allowPublicKeyRetrieval 是 MySQL 8 的 caching_sha2_password 在非 SSL 连接下必需的；
+      # rewriteBatchedStatements 把批量 insert 改写成一条多值 insert（遥测批量入库差一个数量级）。
       #
-      #   useUnicode + characterEncoding=utf8
-      #       中文参数不乱码的前提。
+      # connectionTimeZone 必须写 +08:00 而不是 Asia/Shanghai：写时区名字会启动直接失败
+      # （Unknown or incorrect time zone）—— MySQL 的命名时区要查 mysql.time_zone_name
+      # 那几张表，而它们默认是空的；数字偏移不查任何表，中国不实行夏令时，两者等价。
       #
-      #   connectionTimeZone=+08:00
-      #       ★ 这个不是可有可无的。DDL 里 create_time 的默认值是
-      #       CURRENT_TIMESTAMP(3)，而 CURRENT_TIMESTAMP 取的是**数据库会话的时区**，
-      #       不是服务器本地时间。不指定的话，容器里的 MySQL 默认走 UTC，
-      #       于是「数据库自动填的创建时间」会比「Java 填的业务时间」差 8 小时 ——
-      #       同一条记录里两个时间对不上，对账时根本解释不清。
-      #
-      #       老版本驱动的参数名是 serverTimezone，8.0.23 起已废弃。
-      #
-      #       ★★ 为什么写 +08:00 而不是 Asia/Shanghai（这是实测踩出来的）★★
-      #
-      #       写成时区**名字** Asia/Shanghai 时，启动直接失败：
-      #           java.sql.SQLException: Unknown or incorrect time zone: 'Asia/Shanghai'
-      #
-      #       这个报错很容易被误解成「时区名拼错了」。真正的原因是：
-      #       MySQL 处理命名时区不是靠内置的时区数据库，而是要查
-      #       mysql 库里的 time_zone_name / time_zone 等几张表，
-      #       而那几张表**默认是空的**，需要用 mysql_tzinfo_to_sql 导入系统时区数据。
-      #       验证方法（返回 0 就说明没导入）：
-      #           SELECT COUNT(*) FROM mysql.time_zone_name;
-      #
-      #       ★ Windows 上这个问题特别常见 —— mysql_tzinfo_to_sql 是 Unix-only 的工具，
-      #         Windows 的 MySQL 安装包**不带**它，得另外去官网下载时区表的 SQL 再导入。
-      #         所以「在本机跑得起来、在 Linux 服务器上跑不起来（或反过来）」的
-      #         时区问题，十有八九就是这个差异。
-      #
-      #       用数字偏移 +08:00 就绕开了整件事：它不查任何表，直接设会话变量。
-      #       中国不实行夏令时，+08:00 和 Asia/Shanghai 在任何时刻都等价，
-      #       所以这里没有精度损失。
-      #
-      #   forceConnectionTimeZoneToSession=true
-      #       ★ 光有上面那个还不够。connectionTimeZone 只影响驱动层的读写转换，
-      #       要让**数据库端的 CURRENT_TIMESTAMP** 也走这个时区，
-      #       必须把会话的 time_zone 变量设过去（驱动会发一条
-      #       SET time_zone='+08:00'）。加上这个参数之后，
-      #       Java 的 LocalDateTime.now() 和数据库的 CURRENT_TIMESTAMP(3)
-      #       才是同一个时钟。
-      #
-      #       ★ 如果哪天报 Unknown or incorrect time zone，先看这里的值是不是
-      #         被改成了名字形式，再看 mysql.time_zone_name 有没有数据。
-      #
-      #   allowPublicKeyRetrieval=true
-      #       MySQL 8 默认用 caching_sha2_password 认证，
-      #       非 SSL 连接下需要它，否则报
-      #       "Public Key Retrieval is not allowed"
-      #
-      #   rewriteBatchedStatements=true
-      #       把批量 insert 改写成一条多值 insert。P1d 遥测批量入库时，
-      #       这个参数能让吞吐差一个数量级 —— 现在加上是因为
-      #       等到 P4 压测才发现它是「翻配置时才想起来」的那一类问题
+      # 光有它只影响驱动层的读写转换，数据库端的 CURRENT_TIMESTAMP 还走会话时区，要靠
+      # forceConnectionTimeZoneToSession 发 SET time_zone='+08:00'；缺了它，数据库自动填的
+      # create_time 会比 Java 填的业务时间差 8 小时。
       url: jdbc:mysql://${CHARGE_OPS_DB_HOST:localhost}:${CHARGE_OPS_DB_PORT:3306}/${CHARGE_OPS_DB_NAME:chargeops}?useUnicode=true&characterEncoding=utf8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
 
       username: ${CHARGE_OPS_DB_USERNAME:root}
       password: ${CHARGE_OPS_DB_PASSWORD:123456}
 
-      # ---------------- 连接池 ----------------
-      # initial-size 设成和 min-idle 一样，避免启动后前几个请求还要现建连接。
-      # 这几个值是**开发环境**的规模（单机、一个人用），
-      # 生产要按「数据库 max_connections ÷ 实例数」反推，见 application-prod.yml
+      # 开发环境的规模（单机、一个人用）。生产要按「max_connections ÷ 实例数」反推，
+      # 见 application-prod.yml
       initial-size: 5
       min-idle: 5
       max-active: 20
       max-wait: 60000
 
-      # 空闲连接保活。三个参数必须配套，少一个都可能出现
-      # 「连接被数据库单方面断开，池子里还以为是好的」→ 请求时报
-      # Communications link failure，而重启应用就好了（因为重建了连接）
+      # 三个保活参数必须配套：少了会出现「连接被数据库单方面断开、池子里还以为是好的」，
+      # 症状是请求时报 Communications link failure，而重启应用就好了
       validation-query: SELECT 1
       test-while-idle: true
       test-on-borrow: false
@@ -126,30 +45,16 @@ spring:
       time-between-eviction-runs-millis: 60000
       min-evictable-idle-time-millis: 300000
 
-      # ---------------- Druid 监控页（仅开发环境） ----------------
-      # ★★ 只在 dev 里开，绝不能出现在 prod 配置里 ★★
-      #
-      # 打开后可以访问 http://localhost:8081/druid/
-      # 看到 SQL 执行次数、慢查询、连接池状态 —— 调优时很好用。
-      #
-      # 但是：这个页面会**完整显示执行过的 SQL 和参数**
-      # （包括密码、手机号这些明文值），而它自带的那层登录
-      # 只是一个写死在配置文件里的弱口令。
-      # 把它暴露到公网等于把整个数据库的查询日志送出去。
-      #
-      # 生产环境的替代方案是用 Druid 的日志输出（filter.slf4j）
-      # 把慢 SQL 打进统一日志，由日志平台管控访问权限。
+      # Druid 监控页 http://localhost:8081/druid/，只在 dev 开：它会完整显示执行过的 SQL 和
+      # 参数（含密码、手机号这些明文值），自带的那层登录只是一个写死在配置里的弱口令。
       stat-view-servlet:
         enabled: true
         url-pattern: /druid/*
         login-username: admin
         login-password: admin
-        # 关掉「重置统计数据」按钮。它会把累计的 SQL 统计清零，
-        # 开发时手滑点一下，之前观察到的慢查询数据就没了
+        # 关掉「重置统计数据」按钮，否则手滑点一下之前的慢查询数据就没了
         reset-enable: false
 
-      # 慢 SQL 记录阈值（毫秒）。超过这个值的 SQL 会被 Druid 记下来，
-      # 在监控页的「SQL 监控」里能看到
       filter:
         stat:
           enabled: true
@@ -160,89 +65,44 @@ spring:
     redis:
       host: ${CHARGE_OPS_REDIS_HOST:localhost}
       port: ${CHARGE_OPS_REDIS_PORT:6379}
-      # ★★ 库号 1，不是 0 —— 这是把新老项目隔开的**唯一**手段，理由见文件开头。
-      #    本机上另一个项目用的是 db 0。
-      #    如果本机 Redis（E:\redis）那边设了 requirepass，就把下面那行的注释去掉
+      # 库号 1，不是 0：Redis 没有「库名」的概念，库号是唯一能把新老项目隔开的手段。
+      # 两边都用 `chat:session:` 这个 key 前缀，共用 db 0 会互相覆盖会话数据，
+      # 症状是「聊了两句，上下文突然串到另一个人去了」
       database: ${CHARGE_OPS_REDIS_DB:1}
+      # 本机 Redis（E:\redis）设了 requirepass 的话，把下面这行的注释去掉
       # password: ${CHARGE_OPS_REDIS_PASSWORD:123456}
-      # 连接超时。不设的话默认是无限等待，
-      # Redis 挂掉时请求会一直挂着，而不是快速失败
+      # 不设的话默认是无限等待，Redis 挂掉时请求会一直挂着，而不是快速失败
       timeout: 3000ms
 
       lettuce:
         pool:
-          # ★ 没有 commons-pool2 这个依赖的话，下面这几行是**静默失效**的：
-          #   lettuce 只会用一个共享连接，配置项写了也不生效，不报任何错。
-          #   pom 里已经引了 commons-pool2，这一条才真正起作用
+          # 没有 commons-pool2 依赖的话下面几行是静默失效的（lettuce 只用一个共享连接，
+          # 不报任何错）。pom 里已经引了
           max-active: 16
           max-idle: 8
           min-idle: 2
           max-wait: 3000ms
 
-# ============================================================================
-# 可观测性（仅开发环境）
-# ============================================================================
-# ★★ 这个文件是「dev 专属」的，所以这里可以出现任何**生产不能有**的东西 ★★
-#
-#   判断一条配置该放 application.yml 还是这里，标准只有一个：
-#   「它在生产环境也成立吗？」不成立就属于这个文件。
-#
-#   application.yml 是环境无关的，写在那里的每一行 dev 和 prod 都会生效 ——
-#   P0 时 show-details / com.chargeops:debug 曾经放在那里，
-#   表现就是「生产环境也会跟着全量 debug，并且 health 端点会吐数据库细节」。
-#   已挪到这里。
+# dev 专属，所以这里可以出现任何生产不能有的东西（判断标准只有一个：它在生产环境也成立吗）
 management:
   endpoint:
     health:
-      # 把数据库、Redis 的连通状态一起显示出来。
-      # P0 验收时这一条的价值很高：一眼能看出「是数据库没起来还是代码有问题」，
-      # 比翻启动日志快得多。
-      # ★ 生产是默认的 never，见 application.yml 里那段说明
+      # 一眼能看出「是数据库没起来还是代码有问题」，比翻启动日志快。生产是默认的 never
       show-details: always
 
-# ============================================================================
-# 打印 SQL（仅开发环境）
-# ============================================================================
-# ★ 格式是 logging.level.<Mapper 接口所在的包> = debug，不是配 mybatis 的什么开关。
-#   MyBatis 会把自己的日志打到「Mapper 接口的全限定名」这个 logger 上，
-#   所以这一行能让每个 SQL 连同参数一起打出来。
-#
-# 好处：调试时不用去猜「这条 SQL 到底拼成什么样了」——
-#   XML 里的 <if> 有没有生效、参数传对没有，一眼就能看到。
-#
-# ★ 代价：**参数值也会被完整打印**，包括密码。
-#   所以这一行只能在 dev 存在。生产环境用的是 Druid 的 log-slow-sql，
-#   只打慢 SQL 不打全部（配置就在本文件上面的 datasource.druid.filter 里，
-#   只是那里 stat-view-servlet 开着、生产要关掉 —— 见 application-prod.yml）
+# 打印 SQL 用 logging.level.<Mapper 接口所在的包>=debug —— MyBatis 把日志打到「Mapper 接口的
+# 全限定名」这个 logger 上。代价是参数值也会被完整打印（包括密码），所以只能在 dev 存在。
 logging:
   level:
-    # 精确到 mapper 包，不用 com.chargeops=debug 全开 ——
-    # 全开的话每次请求都会打出一堆框架内部的日志，真正的 SQL 反而被淹掉
+    # 精确到 mapper 包，不用 com.chargeops=debug 全开 —— 全开的话框架内部的日志会把 SQL 淹掉
     com.chargeops.mapper: debug
 
-    # ★ 但仅有上面那一行是不够的。
-    #
-    # 它有精确的适用边界：**只对 com.chargeops.mapper 这一个包生效**。
-    # 而排查问题时真正要看的往往是 mapper 之外的东西 ——
-    # 拦截器有没有放行、BaseContext 里是不是 null、
-    # 结算任务扫到了几条订单、缓存有没有命中。
-    # 这些日志都落在 service / interceptor / redis 包下，
-    # 没有这一行的话它们全被 root:info 挡掉，而你会以为是「代码没走到那里」。
-    #
-    # （两个 logger 名是**包含关系**，不是覆盖关系：
-    #   更具体的那个管它自己的子树，这一行管 com.chargeops 下其余全部。
-    #   所以上面那行的精确性没有被削弱。）
+    # 上面那行只对 mapper 包生效；拦截器有没有放行、BaseContext 是不是 null、结算任务扫到
+    # 几条，这些日志都落在别的包下，没有这一行会被 root:info 挡掉，像是「代码没走到那里」
     com.chargeops: debug
 
-# ============================================================================
-# 定时任务开关（dev）
-# ============================================================================
-# ★ 开关放在这里而不是 application.yml，是因为它是**环境属性**：
-#   「这个环境跑不跑后台任务」和「多久扫一次」是两件事。
-#
-# ★★ 值必须显式为 true：Job 上的 @ConditionalOnProperty 没有 matchIfMissing，
-#    所以**漏配 = 任务不注册**，而且不会有任何报错 ——
-#    表现是「兜底扫描好像从来没跑过」。加新的 profile 时记得带上这一段。
+# 开关放这里而不是 application.yml：「这个环境跑不跑后台任务」是环境属性。
+# 值必须显式为 true（@ConditionalOnProperty 没有 matchIfMissing）：漏配不会报错，只是任务静默不跑
 chargeops:
   scheduling:
     enabled: true

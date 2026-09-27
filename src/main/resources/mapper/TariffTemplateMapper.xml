@@ -3,7 +3,7 @@
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.chargeops.mapper.TariffTemplateMapper">
 
-    <!-- ★ 只有 tariff_template 一张表的列，规则不在这个 Mapper 里（见接口类注释） -->
+    <!--  只有 tariff_template 一张表的列，规则不在这个 Mapper 里（见接口类注释） -->
     <sql id="Base_Column_List">
         id, code, name, region, description, status,
         create_time, update_time, create_user, update_user
@@ -24,12 +24,8 @@
     </insert>
 
     <!--
-      ★ <b>没有业务字段被排除</b> —— 头信息都是描述性的，改错了不会让任何一笔订单
-        算错钱（订单冻结的是 id）。这和 Connector 排除 charger_id、ChargePackage
-        排除 package_type/station_id 是同一个判据的两个方向：<b>改动会不会让别处的
-        数据失真</b>。
-
-      ★ status 只影响「还能不能被新绑定」，不影响已有绑定。见 TariffTemplate 类注释第三节。
+       没有业务字段被排除 —— 头信息都是描述性的，改错了不会让订单算错钱（订单冻结的
+       是 id）。status 只影响「还能不能被新绑定」，不影响已有绑定。
     -->
     <update id="update">
         UPDATE tariff_template
@@ -46,10 +42,8 @@
     </update>
 
     <!--
-      ★ 只取 status = 1：停用的模板不出现在「新建绑定」的选项里，但<b>已存在的绑定
-        不受影响</b> —— 解析时不会经过这条 SQL。
-
-      ★ 不分页：这是下拉框的数据源，分页的下拉框没法用。
+       只取 status = 1：停用的模板不出现在「新建绑定」的选项里，已有绑定不受影响 ——
+       解析时不会经过这条 SQL。不分页：下拉框的数据源分页没法用。
     -->
     <select id="listAllEnabled" resultType="com.chargeops.entity.TariffTemplate">
         SELECT
@@ -60,11 +54,11 @@
     </select>
 
     <!--
-      ★ 和 listAllEnabled 正好相反：这里<b>不过滤 status</b> —— 这条服务的是
-        「已经存在的绑定」补名字，模板后来停用了不改变「这条绑定指向它」这个事实，
-        过滤掉只会让列表里多出一个空白的名字。
+       和 listAllEnabled 正好相反，不过滤 status —— 这条服务的是给已存在的绑定补名字，
+       模板后来停用了不改变「这条绑定指向它」这个事实，过滤掉只会让列表里多出一个
+       空白的名字。
 
-      ★ ids 为空集合时 <foreach> 会展开成 IN ()，是 SQL 语法错误。调用方先判空。
+       ids 为空集合时 <foreach> 会展开成 IN ()，是语法错误，调用方先判空。
     -->
     <select id="listByIds" resultType="com.chargeops.entity.TariffTemplate">
         SELECT
@@ -77,15 +71,12 @@
     </select>
 
     <!--
-      ★ <b>两个模糊字段的匹配方式刻意不同：</b>code 是<b>前缀</b>匹配（运维按编码
-        从左往右敲），name 是<b>包含</b>匹配（「2026」可能出现在名字中间）。
-        和 ChargerMapper 对 device_no / name 的处理一致。
+       code 前缀匹配（运维按编码从左往右敲），name 包含匹配（「2026」可能出现在名字
+       中间），和 ChargerMapper 对 device_no / name 的处理一致。
 
-      ★ region 是<b>精确</b>匹配，不是 LIKE —— 它和 status 组成
-        idx_tariff_template_region_status，写成 LIKE 会让这个联合索引整个失效，
-        而这是「哪些模板能用在这个地区」最主要的查询路径。
-
-      ★ ORDER BY id DESC，理由见 StationMapper.xml。
+       region 是精确匹配，不是 LIKE —— 它和 status 组成
+       idx_tariff_template_region_status，写成 LIKE 会让这个联合索引整个失效，而这是
+       「哪些模板能用在这个地区」最主要的查询路径。ORDER BY id DESC，见 StationMapper。
     -->
     <select id="page" resultType="com.chargeops.entity.TariffTemplate">
         SELECT

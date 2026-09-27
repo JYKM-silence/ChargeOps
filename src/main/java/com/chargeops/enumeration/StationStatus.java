@@ -3,20 +3,10 @@ package com.chargeops.enumeration;
 import com.chargeops.exception.ParamErrorException;
 
 /**
- * 充电站状态
+ * 充电站状态，对应 {@code station.status}
  *
- * <p>对应 {@code station.status}：{@code 0停用 1启用 2维护中}。
- *
- * <h2>★ 为什么不用 {@code StatusConstant}</h2>
- *
- * <p>它只有 ENABLE=1 / DISABLE=0 两个值，而站点是<b>三态</b> ——
- * 多出来的「维护中」不是「禁用」的同义词：停用是运营决策（这个站不做了），
- * 维护中是临时状态（修好了就恢复）。把维护中塞进 DISABLE，
- * 前端就没办法区分「永久关闭」和「今天在检修」。
- *
- * <p>顺带记一笔：{@code StatusConstant} 的类注释里把「站点」列为二值开关，
- * 那句话说错了 —— <b>以 DDL 为准</b>，站点是三值。套餐
- * （{@code charge_package.status} 1上架 0下架）才是真正的二值。
+ * <p> 三态，不能塞进 {@code StatusConstant} 的二值开关：停用是运营决策，
+ * 维护中是临时状态，合到一档前端就分不出「永久关闭」和「今天在检修」。
  */
 public enum StationStatus {
 

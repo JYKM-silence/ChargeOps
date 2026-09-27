@@ -3,12 +3,22 @@
 面向充电站运营商的后端系统：管理站点、充电桩与充电枪，按**分时电价**（尖峰平谷）计费，
 处理车主扫码充电的完整订单链路、钱包余额冻结与结算，并接收设备遥测上报。
 
-> 当前进度：**P0 + P1a + P1b + P1c-1 已完成**（217 个测试全绿）。
+> 当前进度：**P1c 已完成 —— 订单链路全线打通**（382 个测试全绿）。
 > P0 = 骨架 + 建表 + 登录鉴权；P1a = 站点/桩/枪/套餐/计费模板/站点计费绑定的管理端 CRUD（31 个接口）；
 > P1b = `BillingEngine` 计费引擎（纯函数）；
 > P1c-1 = 车主端底座（自助注册/登录、我的信息、我的车辆 CRUD + `category` / `member` 管理端）；
-> P1c-1.5 = `member_package` 持有权益的表结构（DDL + 实体 + Mapper，无 Service —— 见决策 13）。
-> 订单链路（P1c-2 钱包、P1c-3 订单状态机）按下方路线图推进。
+> P1c-1.5 = `member_package` 持有权益的表结构（DDL + 实体 + Mapper，无 Service —— 见决策 13）；
+> P1c-2 = 钱包（余额 / 冻结 / 流水）；**P1c-3 = 订单状态机**（建单冻结 → 设备上报启停 → 结算计价 → 支付扣款 → 退款）。
+>
+> **P1c 收尾** = 补掉 6 处「声称支持、实际走不通」的洞：枪口占用 CAS、权益买入路径、
+> 删设备查在途订单、`total_charge_count` 自增、支付失败兜底扫描、Flyway 迁移机制
+> （见下方「P1c 收尾修掉的 6 条」）。**权益现在可以从车主端真实买到了。**
+>
+> **P1c 收尾·第二轮** = 补掉 4 处「功能写了一半」的洞：套餐退款/作废、`ADMIN_ADJUST`
+> 调账入口、文件上传接口、权益过期定时任务；外加 1 处本轮探索发现的（转挂账时
+> 权益锁没有释放）。见下方「第二轮修掉的 5 条」。**权益现在买得进、也退得掉了。**
+>
+> 下一个里程碑是 P1d（设备上报）。
 
 ---
 
@@ -42,7 +52,7 @@
 | MySQL | 8.4 | 8.0 已停止官方支持 |
 | Redis | 7.4 | |
 | MyBatis | mybatis-spring-boot-starter 4.1.0 | |
-| Druid | druid-spring-boot-**4**-starter 1.2.28 | ★ artifactId 里的 `-4-` 不能少 |
+| Druid | druid-spring-boot-**4**-starter 1.2.28 | artifactId 里的 `-4-` 不能少 |
 | springdoc-openapi | 3.1.1 | 替代 knife4j / springfox |
 | jjwt | 0.12.7 | |
 | Jackson | **3**（`tools.jackson.*`） | Boot 4 的默认 JSON 库 |
@@ -57,16 +67,55 @@
 - MySQL 8（本机服务或 Docker）
 - Redis
 
-### 1. 建表
+**Redis 不是只有跑起来才需要**：`@SpringBootTest` 那几个集成测试类会起完整的
+Spring 上下文，Redis 连不上就整类报错（不是跳过）。只想验算法规避开这一层的话，
+用下面那条「只跑不需要数据库的那部分」的命令（107 条，不碰 MySQL 也不碰 Redis）。
+
+### 1. 建库，然后启动应用
 
 ```bash
-mysql -uroot -p < sql/chargeops.sql
+mysql -uroot -p < sql/00_create_database.sql    # 只建库，不建表
+mvn spring-boot:run                             # 表结构由 Flyway 在启动时建好
 ```
 
-脚本是**幂等**的（每张表都是 `CREATE TABLE IF NOT EXISTS`，种子数据用 `INSERT IGNORE`），
-可以反复执行。建完会打印一段自检输出。
+**表结构不再由手工执行的 SQL 脚本创建**，改由 Flyway 在应用启动时管理。
 
-改表结构时**直接改这个文件重跑**，不要手动 `ALTER` —— 保证任何人拿到仓库都能一次建出正确的库。
+迁移文件在 [src/main/resources/db/migration/](src/main/resources/db/migration/)：
+
+| 文件 | 内容 |
+|---|---|
+| `V1__init_schema.sql` | 19 张表的完整 DDL |
+| `V2__seed_data.sql` | 种子数据（13 条 `INSERT IGNORE`） |
+| `V3__member_package_pay_amount.sql` | `member_package.pay_amount` + `idx_mp_status_expire(status, expire_time)` |
+
+`sql/00_create_database.sql` 只管 `CREATE DATABASE` —— Flyway 连的是一个**已经存在**的库，
+它没有权限也没有语义去创建库。`sql/verify.sql` 是一段自检查询（每张表的列数），
+不是迁移，它是给人看的。`sql/chargeops.sql`（老的手工脚本）已删除。
+
+三条必须记住的规则：
+
+1. **已应用的迁移永不修改，要改表结构就加 `V4__xxx.sql`。** `validate-on-migrate: true`
+ 会把「有人改了已应用的迁移」变成一次启动失败（校验和不匹配）。让两台机器的表结构
+ 悄悄分叉，比在一次启动时报错严重得多。
+2. **`baseline-on-migrate: true` 是「相信」，不是「校验」。** 引入迁移之前就存在的老库
+ 会被记成版本 1 然后**跳过 V1**，Flyway 不会去核对那个库到底是不是 V1 的样子。
+ 换一台机器、换一个同事的库，都要重新用 `sql/verify.sql` 比对一次。
+3. **不要碰 `clean`。** `clean-disabled: true` 已写进配置。在一个 baseline 过的开发库上
+ 误触发等于一把清空所有测试数据，也永远不要设 `clean-on-validation-error`。
+
+**测试不会帮你跑迁移。** `src/test/resources/application.properties` 里写着
+`spring.flyway.enabled=false`，这是有意的：测试库就是开发库，测试假定表已经在那儿了。
+于是有一个很贵的坑 —— **写好了 `V4__xxx.sql`、`mvn test` 全绿，但那条迁移一行都没执行过。**
+如果新代码用到了新加的列，全量测试会以 `Unknown column ...` 炸掉一批用例，
+**而报错指向的是 Service，不是迁移**。加完迁移必须手工 `mvn spring-boot:run` 起一次。
+
+同样，**千万不要用 mysql CLI 手工 `ALTER` 把列加上去**：Flyway 不知道你加过了，
+下一次启动会再执行一遍并死在 `Duplicate column name` 上，一个本来只是「忘了启动一次」
+的问题变成要手工去修 `flyway_schema_history` 的事故。
+
+> 完整论证在 [docs/设计决策.md](docs/设计决策.md) 第二节：baseline 的实际含义与验数结果、
+> `pay_amount` 为什么必须是快照列、`idx_mp_status_expire` 的列序、以及当初为什么必须
+> 换掉手工脚本（`CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作）。
 
 ### 2. 起依赖
 
@@ -172,10 +221,10 @@ curl -s "http://localhost:8081/api/admin/station/page?pageNum=1&pageSize=10" -H 
 和管理端的 `token` 是两个不同的头、两把不同的密钥，互相验不过）：
 
 ```bash
-# 注册即登录，直接返回 token。★ 演示车主已经注册过了，
+# 注册即登录，直接返回 token。演示车主已经注册过了，
 #   重复调用会得到 {"code":0,"msg":"13900000001已存在"} —— 这本身就是撞唯一索引的样子
 curl -s -X POST http://localhost:8081/api/auth/member/register \
-  -H "Content-Type: application/json" \
+     -H "Content-Type: application/json" \
   -d '{"phone":"13900000009","password":"123456","nickname":"demo"}'
 
 M=$(curl -s -X POST http://localhost:8081/api/auth/member/login \
@@ -186,11 +235,64 @@ curl -s http://localhost:8081/api/member/me                    -H "authenticatio
 curl -s http://localhost:8081/api/member/vehicle               -H "authentication: $M"   # 我的车（不分页，个位数）
 curl -s -X POST http://localhost:8081/api/member/vehicle       -H "authentication: $M" \
      -H "Content-Type: application/json" -d '{"plateNo":"yuebd12345","brand":"BYD"}'      # 车牌会被规范成 YUEBD12345
-# ★ 下面的 {id} 换成上面那个响应的 data[].id —— 用别人的车辆 id 会得到「车辆不存在」
+# 下面的 {id} 换成上面那个响应的 data[].id —— 用别人的车辆 id 会得到「车辆不存在」
 curl -s -X PUT  http://localhost:8081/api/member/vehicle/{id}/default -H "authentication: $M"
 curl -s -X PUT  http://localhost:8081/api/member/me/password   -H "authentication: $M" \
      -H "Content-Type: application/json" -d '{"oldPassword":"123456","newPassword":"newpass456"}'
 ```
+
+### 充电链路（P1c-3）端到端
+
+订单是**双身份**的：车主只能建单 / 取消 / 支付，
+而**决定用了多少电、因而决定金额的那两步在管理端** ——
+`start` / `end` 收的是**电表读数**，让用户自己填就等于让用户自己决定付多少钱。
+`$M` 是车主 token，`$TOKEN` 是管理端 token。
+
+```bash
+# 1. 充值
+curl -s -X POST http://localhost:8081/api/member/wallet/recharge \
+ -H "authentication: $M" -H "Content-Type: application/json" -d '{"amount":"100.00"}'
+
+# 2. 建单 —— 冻结「下单这一刻」的计费模板 + 一份预估金额，返回订单 id
+OID=$(curl -s -X POST http://localhost:8081/api/member/orders \
+ -H "authentication: $M" -H "Content-Type: application/json" \
+ -d '{"stationId":1,"chargerId":1,"connectorId":1,"vehicleId":1}' \
+ | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+# 枪被别人占着、或这辆车已有进行中的订单 → code:0（不是 500）
+# 可用余额付不起预估冻结额 → 直接拒绝，订单根本建不出来
+
+# 3~5. 设备上报启动 → 上报结束 → 结算（管理端，由运维代为录入）
+curl -s -X POST http://localhost:8081/api/admin/orders/$OID/start -H "token: $TOKEN" \
+ -H "Content-Type: application/json" -d '{"startMeterKwh":"1000.0000"}'
+curl -s -X POST http://localhost:8081/api/admin/orders/$OID/end -H "token: $TOKEN" \
+ -H "Content-Type: application/json" -d '{"endMeterKwh":"1010.0000"}'
+curl -s -X POST http://localhost:8081/api/admin/orders/$OID/settle -H "token: $TOKEN"
+
+# 6. 支付 —— 先改订单状态、再动钱包，同一个事务
+curl -s -X POST http://localhost:8081/api/member/orders/$OID/pay -H "authentication: $M"
+
+# 7. 详情：含分段明细 + 完整流转历史
+curl -s http://localhost:8081/api/member/orders/$OID -H "authentication: $M"
+```
+
+**3~6 每一步都是幂等的**，而且幂等手段是**状态条件更新**不是唯一索引：
+把上面任意一条**连发两次**，第二次得到的是 `code:0`（「订单当前状态不允许该操作」），
+**不是重复扣款**。设备重复上报同一条「结束」事件走的就是这条路径 ——
+这也是它必须靠 `status` 判断、而不能 catch 钱包侧唯一索引异常的原因
+（那个异常抛出时事务已被标记回滚，见 `WalletService` 类注释）。
+
+订单状态与「钱在哪」的对应关系（完整流转表见 `OrderStatus` 类注释）：
+
+| 状态 | | 钱 |
+|---|---|---|
+| `1` 待启动 / `2` 充电中 / `3` 待结算 | 进行中 | **冻着** |
+| `4` 待支付 / `6` 支付失败 | 已结束、没付成 | **冻着**（6 也能重新付，见决策 17） |
+| `5` 已支付 | 完成 | 已扣 |
+| `7` 已退款 / `8` 已取消 | 终态 | 已退 / 已解冻 |
+| `9` 异常挂账 | 挂起，**不是终态** | **还冻着** —— `markAbnormal` 只释放枪口、不动钱包，等人工核销。见决策 16 |
+
+**`4 待支付` 和 `6 支付失败` 都是安全的停留状态** ——
+钱在冻结里、订单可重试，充值后原样再 `pay` 一次即可。
 
 管理端还剩两个域，和上面六个形状不同：
 
@@ -219,22 +321,37 @@ Swagger UI：<http://localhost:8081/swagger-ui/index.html>
 mvn test
 ```
 
-当前 217 条测试，分三类：
+当前 **382** 条测试（`mvn -o test` 的汇总行；0 失败 / 0 错误 / 0 跳过），分四类：
 
-| 类别 | 需要 MySQL/Redis | 内容 |
-|---|---|---|
-| 纯单测 | ❌ | `BillingEngineTest` / `TariffValidatorTest`（★ 计费算法）、`ChargePackageServiceImplTest`、`MemberServiceImplTest`（★ 四条登录分支 + token 签发）、`VehicleServiceImplTest`（★ 默认车不变量） |
-| Mapper 集成 | ✅ | 11 个 `*MapperTest`：审计字段、`24:00:00` 往返、乐观锁、唯一索引的枪口互斥、`refreshGunCount`、排序规则 `ai_ci`/NO PAD 的实测行为、`member_package` 的锁定互斥与结算幂等 |
-| —— | ✅ | 用 `@SpringBootTest`，需要本机 MySQL / Redis 可用 |
+| 类别 | 需要 MySQL/Redis | 条数 | 内容 |
+|---|---|---|---|
+| 纯单测 | ❌ | 100 | `BillingEngineTest` / `TariffValidatorTest`（计费算法）、`ChargePackageServiceImplTest`、`MemberServiceImplTest`（四条登录分支 + token 签发）、`VehicleServiceImplTest`（默认车不变量）。判据是**类上没有 `@SpringBootTest`** —— 不加载容器，所以不碰数据库 |
+| Mapper 集成 | ✅ | 158 | 13 个 `*MapperTest`：审计字段、`24:00:00` 往返、乐观锁、唯一索引的枪口互斥、`refreshGunCount`、排序规则 `ai_ci`/NO PAD 的实测行为、`member_package` 的锁定互斥与结算幂等、 `charging_order` 的六道状态闸门、 `ConnectorMapperTest` 的四条 CAS（占用 / 启动 / 结束 / 释放）与 `incrementChargeCount` |
+| Service / Controller 集成 | ✅ | 109 | `WalletServiceImplTest`（冻结 / 解冻 / 扣款的钱不变量 + `ADMIN_ADJUST` 的**符号**）、`ChargingOrderServiceImplTest`（整条订单链路：建单冻结 → 结算计价 → 支付扣款，含**两条线程的并发建单** + 转挂账时必须**释放权益锁**）、`MemberPackageServiceImplTest`（四种 `PackageType` 的直购 + 作废退款：先 CAS 后打款）、`StationServiceImplTest` / `ChargerServiceImplTest` / `MemberStationServiceImplTest`（删除守卫与站点查询）、`FileUploadControllerTest`（上传的**校验顺序**：先按扩展名拒绝，再读字节） |
+| 定时任务 | ✅ | 15 | `ChargingOrderSweepJobTest`（支付失败兜底扫描：账龄按 `settle_time`、**绝不自动重试 `pay()`**、单笔失败不带走一轮）、`MemberPackageExpireJobTest`（过期扫描：**被订单锁着的一份都不能动** —— 动了它那份权益就永远退不了款）—— 被测对象都是 `new` 出来的，**不是** `@Autowired`：`chargeops.scheduling.enabled=false` 让那两个 Bean 根本不存在（见下），任务方法直接调一次就等于扫全表，不需要 `@EnableScheduling`。`orderService` 仍来自容器，所以 `markPayFailed` 的独立事务是真的 |
+
+Mapper 与 Service 集成测试都用 `@SpringBootTest`，需要本机 MySQL **和 Redis** 都可用。
+这两个 Service 测试**刻意不标 `@Transactional`** —— 标了的话整个测试跑在一个会回滚的
+事务里，「失败时钱有没有留在冻结里」这类断言就永远测不到真相。
+
+**所以：一个时刻只能有一个 `mvn test` 在跑。** 
+
+测试之间靠 `TEST_ID_BASE` 哨兵区间隔离（2e12 钱包 / 3e12 订单 Mapper / 4e12 订单 Service /
+5e12 权益 / 6e12 站点 / 7e12 桩 / 8e12 兜底扫描 / 9e12 权益过期），**但这些区间是一个方向开口的** ——
+收尾写的是 `DELETE ... WHERE member_id >= TEST_ID_BASE`，于是一个 3e12 的类
+会连 6e12 的行一起删。串行跑没有任何问题（前一个类的 `@AfterEach` 早就跑完了），
+**但两个 `mvn test` 并行时会互相删数据**，症状是「刚插进去的订单凭空消失」：
+断言里出现 `expected: 2L but was: 0L`，而且单独跑永远是绿的。
+surefire 默认单进程串行，正常使用不会碰到；**并行化测试之前必须先把这个范围封口**。
 
 **这一层不是装饰**：`ConflictingBeanDefinitionException` 那个 bug（见决策 9）
 能过 `mvn compile`、能过 IDE 检查，**只有起容器才会暴露** ——
 抓到它的正是这组 `@SpringBootTest`。写 Mapper 测试的收益不只是「SQL 写对了没」。
 
-只跑不需要数据库的那部分（最快的反馈环，47 条）：
+只跑不需要数据库的那部分（最快的反馈环，107 条）：
 
 ```bash
-mvn test -Dtest='BillingEngineTest,TariffValidatorTest,ChargePackageServiceImplTest,MemberServiceImplTest,VehicleServiceImplTest'
+mvn test -Dtest='BillingEngineTest,TariffValidatorTest,ChargePackageServiceImplTest,MemberServiceImplTest,VehicleServiceImplTest,FileUploadControllerTest'
 ```
 
 两个单测里各有一条值得单看的写法：
@@ -261,16 +378,38 @@ src/main/java/com/chargeops/
 ├── interceptor/      JWT 鉴权拦截器（管理端 / 车主端两套）
 ├── controller/       admin（管理端）/ user（车主端）—— 两侧的类名都自带作用域，见下方决策 9
 ├── billing/          BillingEngine / TariffValidator / TariffRuleSnapshot 等 —— 纯函数计费内核
-├── service/ mapper/ entity/ dto/ vo/     业务分层（service 接口 + impl 各 7 个）
+├── service/ mapper/ entity/ dto/ vo/   业务分层（service 接口 + impl 各 12 个）
+│   └─ P1c-2 起新增：WalletService / ChargingOrderService，
+│      以及 ChargingOrderMapper（全部状态流转都是带 from 的条件更新）、
+│      ChargingSegmentMapper / ChargingOrderEventMapper / WalletMapper / WalletTransactionMapper
+├── job/              ChargingOrderSweepJob / MemberPackageExpireJob —— 兜底扫描，
+│                    都受 `chargeops.scheduling.enabled` 管着（测试里是 false）
 ├── handler/          GlobalExceptionHandler —— 统一异常翻译
 ├── redis/            CacheClient / RedisData / RedisJsonUtil —— 缓存与逻辑过期
-├── properties/       JwtProperties / StorageProperties
-├── utils/            JwtUtil / FileStorage + LocalFileStorage
+├── properties/       JwtProperties / StorageProperties / SchedulingProperties
+├── utils/            JwtUtil / FileStorage + LocalFileStorage / TimeCodec / BizNoGenerator
 └── constant/ exception/ result/ enumeration/    基础件
 
-sql/chargeops.sql     19 张表的完整 DDL + 种子数据（含每条索引的设计理由）
-docker-compose.yml    本地依赖（备选路径）
+src/main/resources/db/migration/
+    V1__init_schema.sql                19 张表的完整 DDL（含每条索引的设计理由）
+    V2__seed_data.sql                  种子数据（13 条 INSERT IGNORE）
+    V3__member_package_pay_amount.sql  退款要用的实付快照 + 过期扫描的索引
+        表结构的唯一真本。要改结构就加 V4，不要改 V1/V2/V3；
+        测试不会替你跑迁移，加完必须手工起一次应用（见上）
+sql/00_create_database.sql             建库（Flyway 管不了 CREATE DATABASE）
+sql/verify.sql                         自检查询，给人看的，不是迁移
+docker-compose.yml                     本地依赖（备选路径）
 ```
+
+**P1c-3 新增的 5 张表**（都在 `V1__init_schema.sql` 里）：
+
+| 表 | 作用 | 一个要点 |
+|---|---|---|
+| `charging_order` | 订单主体，9 个状态 | 存**快照列**（`plate_no` / `tariff_template_id` / `member_package_id` / `frozen_amount`），结算时**不 JOIN** `vehicle` / `station` —— 车牌改了、模板调价了，都不该改动历史订单 |
+| `charging_segment` | 结算产出的计费分段，`uk(order_id, seq)` | 列与 `BillingResult` 逐字段对应，没有转换层 |
+| `charging_order_event` | 状态流转流水（**append-only**） | 记录「谁改的」—— 因为 `update_user` 对设备上报路径没有意义，见 `ChargingOrderMapper` 类注释第二节 |
+| `wallet` | 余额 / 冻结，`uk(member_id)` | `balance` 与 `frozen_amount` **必须分两列**：冻结不能让可用余额减少，否则那就叫直接扣款 |
+| `wallet_transaction` | 流水，`uk(order_id, type)` | 它是**最后一道防线**，不是幂等手段 —— 见下方决策与 `WalletService` 类注释 |
 
 单模块。分层包结构与教程形态一致，后期要拆多模块是纯机械操作。
 
@@ -285,286 +424,126 @@ docker-compose.yml    本地依赖（备选路径）
 
 ---
 
-## 几个值得一读的设计决策
+## 前端（`web/`）
 
-> 下面每一条都是**实际踩过、有证据**的，不是照抄的最佳实践清单。
-> 完整推导写在对应的类注释里。
-
-### 1. `@AutoFill` 为什么是 MyBatis 插件，不是 AOP 切面
-
-公共字段自动填充的教科书写法是 `@Aspect` + `@Pointcut("@annotation(AutoFill)")`，
-把注解开在 Mapper 方法上。
-
-**这个写法在本项目里是静默失效的**：编译通过、启动成功、零报错，但审计字段永远是 `null`。
-
-排查过程是一步步排除假设的：
+前端是**独立的一个 workspace**，不在 `src/` 里，也不参与 Maven 构建：
 
 ```
-aspectjweaver 在不在 classpath 上？              → 在
-AnnotationAwareAspectJAutoProxyCreator 注册了吗？ → 注册了
-切面 bean 存在吗？                                → 存在
-切点表达式匹配 StaffMapper.insert 吗？             → true
-staffMapper 是 Spring AOP 代理吗？                → false   ← 问题在这
+web/
+├── packages/admin    Vue 3 + TypeScript + Element Plus :5173 运维后台（52 个接口）
+├── packages/h5       Vue 3 + TypeScript + Vant 4 :5174 车主手机端（25 个接口）
+└── packages/shared   纯 TS（无 .vue）—— HTTP / 类型 / 字典 / 领域规则 / Mock
 ```
 
-根因是**机制上不可能**：Mapper 接口对应的 bean 是 `MapperFactoryBean`（一个 `FactoryBean`），
-Spring 容器先对**工厂对象本身**跑 `BeanPostProcessor`（切点永远匹配不上它），
-之后才调 `getObject()` 拿到真正被调用的 `MapperProxy` ——
-**这一步发生在所有 `BeanPostProcessor` 之后**，而 Spring AOP 的自动代理正是靠
-`postProcessAfterInitialization` 织入的。代理没机会织进去。
-
-所以调整 `proxy-target-class`、换 CGLIB、加 `@EnableAspectJAutoProxy` 全都没用，方向就不对。
-改成 MyBatis 插件（拦截 `Executor.update`）后**机制上一定生效**。
-
-> 副产品：这个 bug 是**写测试抓到的**。当时三条 P0 验收全绿 ——
-> 这正是「接口能通」和「功能正确」是两件事的具体样子。
-
-见 `mybatis/AutoFillInterceptor.java`。
-
-### 2. `connectionTimeZone` 必须写 `+08:00`，不能写 `Asia/Shanghai`
-
-写成时区**名字**会导致启动直接失败：
-
-```
-java.sql.SQLException: Unknown or incorrect time zone: 'Asia/Shanghai'
+```bash
+cd web && pnpm install
+pnpm dev:admin      # 连真后端（/api 经 vite proxy 转发到 :8081）
+pnpm dev:h5
+pnpm dev:admin:mock # 纯前端 Mock，不需要 MySQL / Redis
+pnpm build          # 两端构建；类型检查是前置步骤
 ```
 
-这个报错极易被误解成「时区名拼错了」。真正原因是 MySQL 处理命名时区要查
-`mysql.time_zone_name` 等几张表，而**那几张表默认是空的**：
+> **前端不直连 8081**。后端零 CORS，且鉴权头是自定义头（`token` / `authentication`），
+> 必然触发 `OPTIONS` 预检而被 JWT 拦截器打成 401 —— 所以开发期一律走 Vite 同源代理。
+> 上线必须用 Nginx 同源反代 `/api` 与 `/img`。
 
-```sql
-SELECT COUNT(*) FROM mysql.time_zone_name;   -- 返回 0 就说明没导入
-```
+详细的启动方式、演示账号、Mock 场景、架构约定、**10 条已知限制**与排错表
+都在 [`web/README.md`](web/README.md) —— **改前端之前先读它第 6 节**。
 
-Windows 上尤其常见 —— `mysql_tzinfo_to_sql` 是 Unix-only 工具，Windows 安装包不带它。
+### 为 H5 补的两个车主端接口（Phase 0.5）
 
-用数字偏移 `+08:00` 绕开整件事（中国不实行夏令时，两者恒等），
-再配 `forceConnectionTimeZoneToSession=true` 让数据库端的 `CURRENT_TIMESTAMP` 也走同一时区。
+H5 的充电入口原本是断的：建单需要 `stationId` / `chargerId` / `connectorId` 三个数字，
+而车主端**没有任何接口能拿到它们**（`MemberStationPageQueryDTO` 的类注释原话是
+「三个 id 在车主端没有任何合法来源」「前端也只能让用户手输三个数字」）。
 
-### 3. `datetime(3)` 的精度与四舍五入
+新增 **1 个 Controller + 1 个 Service/Impl**，复用现成零件，**不修改任何既有类**：
 
-`LocalDateTime.now()` 是纳秒精度，而审计列是 `datetime(3)`。落库时超出部分被
-**四舍五入**（不是截断）：`.818918500` → `.819`。
+| 新接口 | 复用的零件 |
+|---|---|
+| `GET /api/member/station/page` | `MemberStationPageQueryDTO` + `StationMapper.pageForMember`（SQL 内写死 `status = 1`）+ `ConnectorMapper.countByStationIds` |
+| `GET /api/member/connector/by-station/{stationId}` | `ConnectorMapper.listByStation` + `MemberConnectorVO.from(...)` |
 
-写测试时踩到：拿内存里的对象和从库里读回的对象比，断言必然失败，
-而失败信息长得像「字段被改掉了」，很容易误导到错误方向。
-**正确做法是两边都从库里取。**
+### 前端**必须**知道的 5 条后端事实
 
-同一个坑对所有 `datetime(3)` 列都成立。
+这几条都会直接改变 UI 行为，写在这里免得每次都要回到 Java 源码里翻：
 
-### 4. `WebMvcConfigurer`，不是 `WebMvcConfigurationSupport`
+1. **`pay` 的 CAS 是 `status IN (4, 6)`** —— 「6 支付失败」**可以重新支付**（6→5），不是死胡同。
+ → H5 详情页对 6 必须有「重新支付」按钮，不能只引导充值。
+2. **`listByStation` 不排序**（`gun_no` 是字符串，排出来是 `1, 10, 2`）——
+ 后端注释明确要求**前端重排**。见 `h5/src/api/station.ts` 的 `sortConnectors()`：
+ 先可用、再按桩分组、枪号用 **`numeric: true` 的自然序**。
+3. **`available` 是快照不是预订** —— 前端必须处理「`available=true` 但建单失败」这个分支
+ （正常并发，不是 bug），失败时要**重新拉枪列表**并提示换一把。
+4. **建单即按预估价冻结余额** —— 所以建单失败最常见的原因是**余额不足**而不是枪不可用。
+ 两种失败要引导到不同地方（充值 / 换把枪），但后端只给一句中文 msg，只能按文案分流。
+5. **`eventType === 'abnormal'` 有两种含义**（余额不足时后端自己把 4→6，以及其他异常）——
+ 事件流渲染**必须结合 `fromStatus`/`toStatus`**，不能只看 `eventType`。
+ 且 `fromStatus`/`toStatus` 是**裸 Integer 没有 label**，前端自建了状态码→中文表。
 
-继承 `WebMvcConfigurationSupport` 会**关掉 Spring Boot 的 MVC 自动配置** ——
-静态资源（含 swagger-ui 的 webjar）、默认消息转换器全部失效。
-表现为 swagger-ui 404、上传图片 404，而日志里没有直接线索。
+### 前端侧的对称约定
 
-排查这类问题时先访问 `/v3/api-docs`：**它是纯 JSON，不依赖任何前端静态资源**。
-有 JSON → 文档数据是好的，问题在静态资源；没 JSON → springdoc 根本没生效。方向完全不同。
-
-### 5. 依赖版本上的两个坑
-
-- **Druid**：Boot 4 要用 `druid-spring-boot-4-starter`（artifactId 里有 `-4-`）。
-  引错成普通的 `druid-spring-boot-3-starter` 会在启动时 `ClassNotFoundException: javax.servlet.Filter`
-- **Boot 4 把 `spring-boot-starter-aop` 改名成了 `spring-boot-starter-aspectj`**。
-  按老经验敲旧名字会报 `'dependencies.dependency.version' ... is missing` ——
-  这个报错说的是「缺版本号」，但真实含义是「BOM 里没有这个坐标」
-
-### 6. `DEFAULT` 只在字段**缺席**时生效 —— 两个把 null 变成 500 的机制
-
-写 NOT NULL 列时，很容易相信「DDL 里有 `DEFAULT 0`，不传就是 0」。**在满列 INSERT 下这是假的。**
-
-```sql
-INSERT INTO t (a) VALUES (NULL);       -- ERROR 1048: Column 'a' cannot be null
-INSERT INTO t (a) VALUES (DEFAULT);    -- 用到 DEFAULT
-```
-
-`DEFAULT` 的触发条件是「这一列没有出现在 INSERT 的列清单里」，**不是「值是 null」**。
-本项目的 Mapper 全部是满列插入（列清单写死），所以**显式传 null 就是 errno 1048**。
-
-配套的第二个机制在 Java 侧：**DTO 的字段初始值只挡「JSON 里没有这个键」**。
-`{"openTime": null}` 是显式 null，Jackson 照常调 setter，**覆盖掉初始值**。
-
-两条合起来是一条规则：**对 NOT NULL 列，「不传」和「传 null」必须在 Service 里被归一成同一件事**。
-做法是把默认值写成 DTO 上的 `public static final` 常量
-（`ChargePackageDTO.DEFAULT_STATION_ID` 等），字段初始值和 Service 兜底引用**同一个常量** ——
-否则两处各写一遍 `0`，改了一处就会漂移，而漂移的表现是「同样的请求，一次成功一次 500」。
-
-冒烟测试里这条被直接验证过：`stationId` 显式传 null 的请求，报出的错误和完全不传**一字不差**。
-
-### 7. 计费模板的规则**不可变**，而这正是 `station_tariff` 存在的理由
-
-`charging_order` 在下单那一刻把 `tariff_template_id` 冻结进去，所以电价调整不影响在途订单。
-
-**但这条保证只在规则不可变时才成立。** 如果模板的规则还能改，已冻结的 id 就会指向
-被改过的规则 —— 保证静默失效：订单金额照样算出来，只是和用户启动时看到的不一样。
-
-所以 `TariffTemplateServiceImpl.saveRules` 有一道守卫：模板被任何 `station_tariff` 行引用时，
-**拒绝修改规则**。要调价就新建一个模板版本，用 `effective_from` 绑定生效期。
-守卫同时把新绑定拦在停用模板之外，但**不动已有绑定** —— 两条路径、两个判断。
-
-边界值得记清楚：**冻结的是规则，不是模板头**。改名称/地区/说明/`status` 不经过守卫，
-否则「改个说明」都会变成不可能。冒烟测试把这条边界两侧都走了一遍。
-
-### 8. 两个只有跑起来才发现的 bug
-
-单元测试和集成测试全绿，接口一调就炸 —— 这两条都是冒烟测试抓到的：
-
-- **`charge_package.category_id` 是 NOT NULL 且无 DDL 默认值**，而 DTO 上忘了 `@NotNull`。
-  不传分类 → 穿过校验 → 撞 insert → **HTTP 500 +「未知错误」**。
-  这是「NOT NULL 无默认值的列必须在 DTO 层拦」这条规则的一个漏网之鱼
-  （`charger.rated_power_kw` 拦了，它没拦）。
-- **`assertEffectiveRange` 对 `effectiveTo` 直接调 `isAfter`**，而 `effectiveTo` 为 null
-  （不填失效时刻 = 长期有效）是**最常见**的合法输入。于是「不填失效时刻」这个正常操作
-  抛 NPE → 500 +「未知错误」。
-  根因是判空写在了调用点而不是方法内 —— **把前置条件放进方法里，任何一个调用点都不可能再忘**。
-
-两条的共同特征是**报错信息量为零**：调用方拿到「未知错误」，既不知道哪个字段，
-也分不清是参数问题还是服务挂了。这类 bug 值得优先修，因为它们会掩盖后面所有的真问题。
-
-### 9. 两个同名 Controller **能编译、能过 IDE、在启动那一刻炸**
-
-P1c-1 加车主端时写了 `controller/user/AuthController`，而 `controller/admin/AuthController`
-早就存在。结果是**整个应用起不来**：
-
-```
-ConflictingBeanDefinitionException: Annotation-specified bean name 'authController'
-for bean class [com.chargeops.controller.user.AuthController] conflicts with
-existing, non-compatible bean definition of same name and class
-[com.chargeops.controller.admin.AuthController]
-```
-
-根因：Spring 的 `AnnotationBeanNameGenerator` 给 `@RestController` 的默认 bean 名是
-**类的简单名首字母小写**，它**不看包名**。同名不同包在 Java 里完全合法，在 Spring 里不合法。
-
-这个错误的性质比它本身更值得记：**它躲过了所有静态检查** ——
-`mvn compile` 成功、IDE 不报错也不警告，只在容器启动那一刻出现。
-抓住它的是 `@SpringBootTest` 那一组 Mapper 测试（它们要起容器），
-报错还伪装成 39 个测试一起失败 + `ApplicationContext failure threshold exceeded`。
-
-修法选了**改类名**（`MemberAuthController`），而不是给两个类写显式 bean 名：
-后者把「不许重名」变成一条要记得的规则，下一个写 `AuthController` 的人还会再踩。
-同一个决定在 `MemberAdminController` 上已经做过一次（它本来叫 `admin/MemberController`）。
-
-**推论**：这个项目里所有 Controller 的类名都必须自带作用域。
-
-### 10. 「每车主至多一辆默认车」**不可能用唯一索引表达**
-
-直觉是给 `vehicle(member_id, is_default)` 加个唯一索引就完事了。**那个索引会禁止
-一个车主有两辆非默认车** —— 非默认行的 `is_default` 全是 0，第二辆立刻撞键。
-MySQL 没有部分索引（`WHERE is_default = 1`）；业界绕法是让非默认行存 NULL
-（唯一索引不约束 NULL），但 DDL 写的是 `is_default tinyint NOT NULL DEFAULT 0`，这条路也已经封了。
-
-**所以 DDL 里那个「缺失的索引」不是疏漏，是这个约束在当前列定义下无法用索引表达。**
-它落在两条条件更新上（`clearDefaultExcept` / `markDefault`），
-关键细节是 `clearDefaultExcept` 的 `id <> #{id}` 是**正确性要求**：
-新建第二辆默认车时是先 insert 再清旧的，那一刻新行在同一事务里已经可见且 `is_default` 已是 1 ——
-没有这个排除条件，创建操作会把自己刚设的标记立刻清掉，而且**静默**（接口返回成功）。
-
-不变量「有车的车主一定有且只有一辆默认车」由三条路径共同维护，
-`VehicleServiceImplTest` 用内存假库把它逐条钉住（含「先清后置」的顺序、
-删掉默认车后提升的是 `ORDER BY is_default DESC, id DESC` 的第一条 = **最新**那辆非默认车）。
-
-### 11. 车牌转大写**不是为了唯一性**，`trim()` 才是
-
-两条都已在真库上验证过（`VehicleMapperTest` 里是可执行的回归测试）：
-
-- 库 / 列排序规则是 `utf8mb4_0900_ai_ci`，**大小写不敏感** ——
-  `uk_vehicle_member_plate` **本来**就把 `粤BD12345` 和 `粤bd12345` 当同一个值。
-  转大写的目的只是**展示统一**（列表页不出现两种写法）。**不要**把它改成 `_bin`/`_as_cs`：
-  唯一约束和「客服按车牌反查车主」会同时静默改变行为。
-- 但同一个排序规则是 **NO PAD** —— 它认为**尾随空格有意义**。
-  于是 `'粤BD12345' = '粤BD12345 '` 返回 **0**，唯一索引**拦不住**带尾空格的重复车牌：
-  实测能把同一块牌登记两次，产生两行看起来一模一样的记录。
-  `VehicleServiceImpl.normalizePlateNo` 里那个 `trim()` 是目前唯一挡住它的事情。
-
-`toUpperCase(Locale.ROOT)` 里的 `Locale.ROOT` 同理不是装饰：土耳其语区域下
-`'i'.toUpperCase()` 是 `'İ'`，而那个 bug **只在 `tr_TR` 的服务器上出现**，本机永远复现不了。
-
-### 12. 唯一键拆成 `uk(type, name)` 之后，**消费方必须知道自己要哪个 type**
-
-DDL 把老的 `uk(name)` 改成 `uk_category_type_name (type, name)`，注释写着理由：
-「『快充』既可能是套餐分类也可能是服务分类，全局唯一会误伤」。
-
-**这个改动有一个不显然的后果：拆了 type 之后，`categoryId` 就不再足以确定一个分类了。**
-指错 type 不会撞任何约束，只会**静默地**把套餐挂到一个「停车服务」分类下 ——
-type 拆分于是只带来了歧义，没带来秩序。所以 `ChargePackageServiceImpl`
-在校验「分类存在」之后还要校验「它是充电套餐分类」：
-
-```
-分类类型不匹配：充电套餐只能挂在「充电套餐分类」下，而分类「停车服务」是「增值服务分类」
-```
-
-**但刻意不校验 `category.status`。** 停用分类不该让已挂在上面的套餐无法改价
-（否则改个价格要先去启用分类）。「下架分类」的语义是「不再出现在新建的下拉框里」，
-不是「存量数据失效」—— 和 `TariffTemplateService` 里「停用模板不影响已有绑定」是同一个道理。
-
-**写路径严格、读路径降级**，这条在项目里反复出现：校验只在 `create`/`update` 上，
-而 `listEnabled` 之类的读路径遇到脏数据返回 `null` 标签而不是抛异常。
+- **`code === 1` 是成功**；业务失败是 **HTTP 200 + `code:0` + 中文 msg**。
+- **HTTP 401 且响应体为空** → 跳登录（**幂等**，并发多个 401 只跳一次）。
+- **`code:0` 且 msg 是「登录状态已失效，请重新登录」也要登出** ——
+ 那是 `BaseContext` 为空时 Service 层的形状，与拦截器 401 是**两条不同路径**。
+- **禁用探针的判据是「HTTP 200 且 `status === 0`」**，不是 HTTP 状态码 ——
+ 后端禁用返回的是成功。**且探针必须软失败**：断网/超时绝不登出。
+- **防重 4 层**：按钮级 `useSubmitLock` + 业务级 `withActionLock`
+ （专挡后端**没有幂等键**的资金动作）+ GET 合并 + **不做乐观更新**。
+- 前端**不按 role 隐藏菜单** —— 后端没有行级权限，隐藏只会制造
+ 「有权限却看不到」的假象（见下方已知缺口）。
 
 ---
 
-### 13. MySQL 的 `SET` 子句**从左到右求值**，后面的子句看得见前面刚改的值
+## 设计决策
 
-这是 `member_package` 的结算语句写出来之后、被测试抓到的一个真实 bug，不是理论推演。
+这个项目里有一批「看起来可以更简单、但不能更简单」的地方。完整的 18 条论证在
+**[docs/设计决策.md](docs/设计决策.md)**，下面只列一句话摘要当索引：
 
-结算要在一句话里干三件事：扣量、释放锁、用尽则改状态。最初的写法把 `status` 放在最后：
+| # | 决策 |
+|---|---|
+| 1 | `@AutoFill` 为什么是 MyBatis 插件，不是 AOP 切面 |
+| 2 | `connectionTimeZone` 必须写 `+08:00`，不能写 `Asia/Shanghai` |
+| 3 | `datetime(3)` 的精度与四舍五入 |
+| 4 | `WebMvcConfigurer`，不是 `WebMvcConfigurationSupport` |
+| 5 | 依赖版本上的两个坑 |
+| 6 | `DEFAULT` 只在字段**缺席**时生效 —— 两个把 null 变成 500 的机制 |
+| 7 | 计费模板的规则**不可变**，而这正是 `station_tariff` 存在的理由 |
+| 8 | 两个只有跑起来才发现的 bug |
+| 9 | 两个同名 Controller **能编译、能过 IDE、在启动那一刻炸** |
+| 10 | 「每车主至多一辆默认车」**不可能用唯一索引表达** |
+| 11 | 车牌转大写**不是为了唯一性**，`trim()` 才是 |
+| 12 | 唯一键拆成 `uk(type, name)` 之后，**消费方必须知道自己要哪个 type** |
+| 13 | MySQL 的 `SET` 子句**从左到右求值**，后面的子句看得见前面刚改的值 |
+| 14 | 折扣按「**被覆盖的**数量」算，扣减就必须按**同一个数** |
+| 15 | `tryLockPackage` 里的一个无条件 `break`，让只有非电量包的车主永远选不中 |
+| 16 | 挂账的来源是「**钱还冻着**」的订单，不是「**枪还占着**」的订单 |
+| 17 | `6 支付失败` 曾经是个死胡同；顺带记两条钱包的顺序后果 |
+| 18 | 套餐作废：**先 CAS，再打款** —— 反过来写就是一台重复退款的机器 |
 
-```sql
--- ❌ 错的
-UPDATE member_package
-   SET remaining_kwh = remaining_kwh - #{usedKwh},
-       locked_order_id = NULL,
-       status = CASE WHEN remaining_kwh - #{usedKwh} <= 0 THEN 2 ELSE status END
- WHERE id = #{id} AND locked_order_id = #{orderId};
-```
+两条贯穿全局的读法：
 
-读起来很顺：「扣完之后，如果剩的 ≤ 0 就标记用尽」。**但 `CASE` 里的
-`remaining_kwh` 读到的是上一行刚减过的值，于是「减 1 次」变成了「减 2 次」，
-条件提前一步成立。**
-
-这不是标准 SQL 的行为（标准里所有 `SET` 都读原值），是 MySQL 单表 `UPDATE` 的文档化语义。
-后果在一张次卡上最明显：**剩 2 次、用掉 1 次之后，剩余确实是 1，`status` 却被置成了 2（已用尽）**——
-用户还剩 1 次没用，第 10 次充电会被静默拒绝，而第 9 次就已经显示「已用尽」了。全程没有报错。
-
-修法是把 `status` 挪到扣量**前面**，并且比较**原值**：
-
-```sql
--- ✅ 对的
-UPDATE member_package
-   SET status = CASE WHEN remaining_kwh <= #{usedKwh} THEN 2 ELSE status END,
-       remaining_kwh = remaining_kwh - #{usedKwh},
-       locked_order_id = NULL
- WHERE id = #{id} AND locked_order_id = #{orderId};
-```
-
-「我有的 ≤ 你要扣的」⇔ 扣完 ≤ 0 ⇔ 用尽 —— 语义没变，只是不再依赖求值顺序之外的东西。
-`settleDuration` / `settleTimes` 是同一个形状（次卡是 `remaining_times <= 1`）。
-
-**真库上的对照实验**（`r` 是剩余量、`s` 是状态，初始 `(2, 1)`）：
-
-| 写法 | 剩余 | 状态 | |
-|---|---|---|---|
-| 扣量在前，`CASE WHEN r - 1 <= 0` | 1 | **2 已用尽** | ❌ 还剩 1 次却标成用尽 |
-| `CASE` 在前，`WHEN r <= 1` | 1 | 1 生效中 | ✅ |
-
-**结论：这三个 `settle` 语句里的 `status` 不能为了「读起来更顺」挪到扣量后面。**
-三个方法各自的 XML 注释和 javadoc 里都留了指回这里的标记，测试也钉住了这个行为
-（`MemberPackageMapperTest.settleTimesShouldConsumeExactlyOne`）。
+- **状态流转一律用带 `from` 的条件更新（CAS），返回 0 行是正常业务结果，不是异常。**
+ 这把「并发」变成了一条 SQL 谓词，而不是一把锁。
+- **钱包全程只被碰两次**：创建订单时冻结，支付时解冻并扣款。`settle` 不碰钱包。
 
 ---
-
 ## 路线图
 
 ```
 P0 骨架+DDL ✅ ──┬── P1a 站点/桩/枪/套餐/模板 CRUD ✅ ──┐
                  └── P1b 计费引擎(纯函数+单测) ✅ ──────┼── P1c 订单链路
-                                     P1c-1 车主端底座 ✅ ┤
-                                                        │
-                                 P1d 设备上报 ──────────┘
-                                                        │
-                                 P2 AI 三件套 ──────────┤
-                                 P3 稳定性与异步 ───────┤
-                                 P4 数据层加深 ─────────┘
+                        P1c-1 车主端底座 ✅ ────────┤
+                      P1c-1.5 权益表结构 ✅ ────────┤
+                     P1c-2 钱包 ✅ ──────────────┤
+                        P1c-3 订单状态机 ✅ ────────┤
+                            收尾 两轮补漏 ✅ ────────┘
+                                               │
+                            P1d 设备上报 ──────────┤
+                                               │
+                           P2 AI 三件套 ──────────┤
+                              P3 稳定性与异步 ───────┤
+                             P4 数据层加深 ─────────┘
 ```
 
 | 阶段 | 内容 |
@@ -574,8 +553,9 @@ P0 骨架+DDL ✅ ──┬── P1a 站点/桩/枪/套餐/模板 CRUD ✅ ─�
 | **P1b** ✅ | `BillingEngine`（纯函数：时间区间 + 总电量 → 计费分段）+ `TariffValidator` |
 | **P1c-1** ✅ | **车主端底座**：自助注册/登录（`/api/auth/member/**`）、我的信息、我的车辆 CRUD + `category` CRUD / `member` 管理（分页·详情·启禁用）。19 个接口 |
 | **P1c-1.5** ✅ | **`member_package` 表结构**（持有权益）：DDL + 实体 + Mapper，含 `lockForOrder` / `releaseLock` / 三个 `settle*` 条件更新。**没有 Service / Controller** —— 它的调用方是 P1c-3 的订单流程。见决策 13 |
-| **P1c-2** | 钱包：余额、冻结、流水（充值 / 下单冻结 / 结算扣款 / 退款）。**必须在这里重新查 `member.status`**，见下方缺口表 |
-| **P1c-3** | 订单状态机（创建→启动冻结→结束结算→支付→退款；`plate_no` 读快照列，不 JOIN `vehicle`） |
+| **P1c-2** ✅ | **钱包**：余额 / 冻结 / 流水。`balance` 与 `frozenAmount` 分两列，所有写操作是条件更新（`AND balance >= ?`），流水靠 `uk(order_id, type)` 保证一单一次。**3 个车主端接口**：`GET /api/member/wallet`（余额）、`/recharge`（充值）、`/transactions`（流水） |
+| **P1c-3** ✅ | **订单状态机**：9 个状态、六道条件更新闸门。建单冻结模板 + 权益 + 预估金额 → 设备上报启动 / 结束 → 结算跑 `BillingEngine` 写分段 → 支付走钱包扣款 → 退款。`plate_no` 读快照列，**不 JOIN `vehicle`**。**9 个接口**：车主端 5 个（建单 / 列表 / 详情 / 取消 / 支付），管理端 4 个（`start` / `end` / `settle` / `refund`） |
+| **P1c 收尾** ✅ | **两轮补漏**，不新增功能阶段。**第一轮 6 条**：枪口占用 CAS、权益买入路径、删设备查在途订单、`total_charge_count` 自增、支付失败兜底扫描、Flyway 迁移机制。**第二轮 5 条**：套餐退款/作废、`ADMIN_ADJUST` 调账入口、文件上传两端点、权益过期定时任务、转挂账时释放权益锁。**第二轮新增 5 个接口**，测试 284 → **382** |
 | **P1d** | 设备上报（遥测批量入库、结束事件幂等、真实电量曲线） |
 | **P2** | SSE 流式对话、RAG 知识库、MCP Server、工具层 |
 | **P3** | MQ 解耦、最终一致性对账、可观测性 |
@@ -587,33 +567,88 @@ P0 骨架+DDL ✅ ──┬── P1a 站点/桩/枪/套餐/模板 CRUD ✅ ─�
 P1c-1 是 P1c 的前置，理由是数据而非顺序：`charging_order.member_id` 是 `NOT NULL`，
 **没有车主就一张订单都建不出来**。所以先把车主侧的身份、车辆、管理端补齐。
 
-P1a/P1b 为 P1c 留好的两个接口：
+P1a/P1b 当初为 P1c 留的两个接口都按预期兑现了：
 
-- `StationTariffService.resolveTemplateIdAt(stationId, at)` —— 下单时冻结模板要调的就是它。
+- `StationTariffService.resolveTemplateIdAt(stationId, at)` —— 下单时冻结模板调的就是它。
   它**永不为 null**：解析不出模板就抛 `TariffNotCoveredException`，
   签名里没有 null 这个可能，所以 P1c 无法忘记检查，也无法「回退到一个没人批准过的默认价」
 - `BillingResult` 的字段形状 = `charging_segment` 表的列，逐字段对应，不需要转换层
 
+**P1c-3 的测试抓到 3 个真实缺陷 + 1 处文档与代码不一致**（见决策 14–17）。
+它们都不是笔误，是「按注释读很合理、按代码跑就错」的那类问题 ——
+这批测试的价值主要在这里，而不在覆盖率数字上。
+
+### P1c 收尾修掉的 6 条
+
+从下面这张表里清出去的，记在这里，不然「原来有这个问题」这件事就没地方查了。
+
+| 原缺口 | 修法 | 一句话 |
+|---|---|---|
+| **权益只能被消耗，没有任何途径产生** | `MemberPackageService.purchase` + `GET /api/member/package/**` 三个端点 | **直购**：一个事务、不建购买单。代价是没有 DB 级的购买幂等，只有一把削峰锁 |
+| **`member_package` 的类型专属列没人校验** | `MemberPackageServiceImpl.copyBenefit` / `requireBenefit` | 「其余几列必须为 NULL」由**写入形状**保证（只写当前类型那一组），「该有的那个不能为空」由校验保证。 它是**七列**不是 `charge_package` 的**四列**：`2+2+1+2`，折扣包那一组只有 `service_discount` 一列 |
+| **没有数据库迁移机制** | Flyway（`V1__init_schema.sql` / `V2__seed_data.sql`，第二轮又加了 `V3`） | 依赖必须是 `spring-boot-starter-flyway`。Boot 4 把自动配置拆成了独立模块，只加 `flyway-core` 会得到一个**在 classpath 上但一条都不跑**的 jar。 而且**测试不会替你跑迁移**（`spring.flyway.enabled=false`），加完迁移必须手工起一次应用 —— 见上方「测试不会帮你跑迁移」 |
+| **`6 支付失败` 完全依赖调用方主动写** | `ChargingOrderSweepJob`（按 `settle_time` 账龄扫描 → `markPayFailed`） | **只标失败，绝不自动重试 `pay()`** —— 那等于未经同意的扣款，见该类的类注释 |
+| **删除站点 / 充电桩都没有检查在途订单** | `ChargingOrderMapper.countByStation` / `countByCharger` + `OrderStatus.blockingCodes()` | 排除 `5 已支付`，否则**完成过一次充电的站点永久不可删**。SQL 里 `status` 必须写在 `station_id` 前面 |
+| **`connector.total_charge_count` 恒为 0** | `ConnectorMapper.incrementChargeCount`，在 `settle` 的 CAS 之后调用 | 语义是「**结算成功**的次数」，不是「车充过电的次数」—— `end()` 电表异常的 3→9 路径不计入，且没有东西能把 9 改回来 |
+
+另有一处探索时发现、不在原计划里的：**`connector.current_order_id` 全项目从未被写入**。
+三处注释（`RedisConstant` / `ConnectorOccupiedException` / `ConnectorStatus`）描述了一个
+不存在的 `UPDATE`，而真正的守卫只是 `ChargingOrderServiceImpl.assertConnectorFree()` 的一次
+SELECT —— **背后没有约束**，两个并发 `create` 可以同时通过检查。
+现已补上 `occupy` / `markCharging` / `markOccupied` / `release` 四条 CAS 语句，
+`ConnectorOccupiedException` 这个类终于被抛出了。
+
+另有**一处本轮自己写出来的 bug，被本轮的测试当场抓住**，记在这里因为它比缺口本身更值得读：
+
+`OrderStatus.blocksDeviceDeletion()` 最初的实现是 `return !isTerminal();`，
+而 `isTerminal()` 只认 `{7,8}` —— 于是集合是 `{1,2,3,4,5,6,9}`，
+**把 `5 已支付` 算了进去**，而**同一个 javadoc 的上一段正写着「`5 已支付`特意不在里面」**。
+javadoc 里那句「它等于「非终态」」就是这个 bug 的来源：**它把结论写成了一个听起来等价的口径**，
+而那个口径差一个元素。后果是把「可恢复的运维操作」变成不可恢复的 ——
+删一个完成过一次充电的站点会失败，唯一的出路是**退款**（一笔真实资金操作）。
+修法是换成 `holdsMoney() || this == ABNORMAL`，两个不相交的理由取并集。
+抓住它的是 `StationServiceImplTest` / `ChargerServiceImplTest` 里那两个
+「只被已支付订单引用 → 应该能删」的用例 —— 用例先写、实现后改，这一次顺序是对的。
+
+### P1c 收尾·第二轮修掉的 5 条
+
+上一轮把「买入」修通了，但**买完之后的路全是断的** —— 这一轮补的是退出、兜底和入口。
+前 4 条是明确点名的缺口，**第 5 条是本轮探索时自己发现的，不在原清单里**。
+
+| 原缺口 | 修法 | 一句话 |
+|---|---|---|
+| ** 套餐没有退款 / 作废路径（钱拿不回来）** | `MemberPackageMapper.voidPackage` + `MemberPackageServiceImpl.voidPackage` + `POST /api/admin/member-package/{id}/void` | **先 CAS，再打款，顺序不能反。** 规则是「**只退完全没用过的**」：只要有一笔 `status <> 8` 的订单引用过它，就拒绝。`PACKAGE_REFUND` 的 `order_id` 是 NULL，`uk_txn_order_type` 对它**不生效**，所以那个 `if (影响行数 == 0) throw` 是这条路径**全部**的并发保护 |
+| `WalletTransactionType.ADMIN_ADJUST` 没有任何调用方 | `WalletService.adjust(memberId, amount, remark)` + `POST /api/admin/wallet/{memberId}/adjust` | 正数走 `credit`、负数走 `deduct`（0 行 → `BalanceNotEnoughException`），**符号原样存进流水**。`order_id` 为 NULL，所以它同样没有 DB 级幂等 —— 这是运维接口，重复调用即重复调账，是**预期**而不是缺陷 |
+| **没有文件上传接口** | `FileUploadService` + `POST /api/admin/upload` / `POST /api/member/upload` | 校验顺序是**先按扩展名拒绝、再读字节**：一个 500 MB 的 `.exe` 不该先被读进内存才说不支持。文件名是 `UUID + 扩展名`，**不含任何用户输入**；扩展名走白名单。 但**上传成功 ≠ `avatar` 被约束了** —— 服务端仍然不校验这个 URL 的归属，详见 `Member.avatar` 的注释 |
+| **权益过期后 `status` 不会自己变成 3** | `MemberPackageMapper.expireOverdue` + `MemberPackageExpireJob` | 谓词里 `locked_order_id IS NULL` 不是顺手加的：一份**正被活着的订单持有**的权益若被标成「已过期」，那笔订单结算时读到的是过期权益，**而且它从此永远退不了款**（`voidPackage` 的预检会把「已过期」拒掉，`releaseLock` 只清锁不改状态，没有任何东西能把它改回 1）。整个失败过程**不报错**，任务返回的行数看起来完全正常 |
+| **转挂账时权益锁没有释放（本轮发现，不在清单里）** | `MemberPackageMapper.releaseLockByOrder` + `ChargingOrderServiceImpl.markAbnormal` 里的一次调用 | `markAbnormal` 只释放了**冻结额**，没有释放 `member_package.locked_order_id`。而 `end()` 的电表异常路径 `3 → 9` 是可达的，于是那份权益被**永久锁死**：`listUsable` 再也发不出它，上一行的退款也永远做不了。 修法刻意**不复用** `releaseOrderResources` —— 那个方法还会解冻，而挂账时钱不该动 |
+
+上一轮那个「已支付站点不可删」的 bug 有一个共同的形状，值得单独说：
+**它和上面最后一条都不是「代码写错了」，而是「一个对的机制在一整条路径上没人调用」。**
+`releaseLock` 一直是对的，取消和结算那几条路径上都正常工作，少的只是 `markAbnormal` 里的一行。
+这类缺陷的测试写法也不同：断言不能停在「锁被释放了」，得断言
+**「另一笔订单的锁没被顺手释放」** —— 否则把 `WHERE locked_order_id = ?` 删掉，测试照样绿。
+（`ChargingOrderServiceImplTest` 里那条 `abnormalOrderMustNotReleaseOtherOrdersLocks`
+用两位车主、两把锁，就是为了让上面那句删除失败。）
+
+
 ### 已知缺口（记录在案，不是遗漏）
 
-| 缺口 | 影响 | 位置 |
-|---|---|---|
-| **禁用车主不撤销已签发的 token** | 拦截器只验签名、从不查库，member token TTL 是 **7 天** —— 禁用后最长 7 天内旧 token 仍可用。**已实测**：禁用后旧 token 请求 `/me` 仍是 HTTP 200（响应里 `status=0`，前端启动探针据此强制登出，但恶意客户端可以忽略）。**P1c-2 / P1c-3 的钱包与订单端点必须在 Service 里重新查一次 `member.status`**；本轮不引入黑名单（那等于每个请求一次 Redis 往返，而 `/api/member/**` 目前只有无资金影响的读写） | `MemberAdminController` / `MemberVO` 类注释 |
-| **登录/注册没有限流** | 两者都跑 BCrypt（故意慢），且注册接口会明确返回「该手机号已存在」。正确修法是**在两个口上都加限流 / 人机校验**，不是靠合并文案 —— 合并登录失败文案换来的是**一致性而不是安全**（枚举在这套 API 里本来就可得） | `MemberAuthController` / `MessageConstant.MEMBER_LOGIN_FAILED` |
-| **没有文件上传接口** | `FileStorage` / `LocalFileStorage` / `/img/**` 静态映射都在，但没有任何 Controller 调用它们 —— `member.avatar`、`charge_package.image` 都只存 URL，服务端不校验可达性 | `Member.avatar` 注释 |
-| 复合唯一键的错误消息会带出键值 | 撞 `uk_vehicle_member_plate` 时用户看到的是 `110-YUEBD11111已存在`、撞 `uk_category_type_name` 时是 `2-smoke-valadd已存在` —— 前缀是**索引里的其他列**，对用户毫无意义。全局翻译点只做了「提取被撞的值 + 已存在」，没有做「只取有意义的那个字段」 | `GlobalExceptionHandler` 的唯一键正则 |
-| **无行级权限** | `staff` 表有 `role`/`station_id`，但 `BaseContext` 只带 `currentId` —— 任何登录的运维能改任何站点 | `StationController` 类注释 |
-| **`member_package` 的类型专属列还没人校验** | P1c-1.5 只钉死了表结构，「四种类型**只留一组** `total_*` / `remaining_*` 非空」这条规则**目前没有任何代码执行**（`charge_package` 有 `ChargePackageServiceImpl` 管，这张表还没有 Service）。残留列是静默的：一份「30 天时长包」如果 `remaining_kwh` 还留着 150，结算时读到它就会白白送出 150 度电。**P1c-3 写买入路径时必须补上** | `MemberPackageMapper.insert` javadoc |
-| **权益过期后 `status` 不会自己变成 3** | 正确性已经被读路径兜住（`listUsable` 里的 `expire_time > #{now}`），所以不会把过期权益发出去；但车主端列表里那份过期的会一直显示成「生效中」，直到有人结算它、或巡检任务扫到。需要一个定时任务，建议并进 P3 的对账/巡检 | `MemberPackageStatus` 类注释 |
-| 局部更新清不掉字段 | `<set>` + `<if>` 的固有代价；修法是 `copyNonNullProperties` + 全行更新 | 各 `update` 的 javadoc |
-| 模板硬删留下孤儿规则 | 有意的取舍：级联删除会顺手抹掉 8 行计价数据且不可恢复 | `TariffTemplateService.delete` |
-| **4xx 被兜底成「未知错误」** | 请求体 JSON 格式错（`HttpMessageNotReadableException`）、路径不存在（`NoResourceFoundException`）都落进 `Exception` 兜底分支 → HTTP 200 +「未知错误」。冒烟测试时一个**编码不对的请求体**（GBK 字节被 Jackson 判为非法 UTF-8）就是这样表现的：排查成本高，因为「参数错了」和「服务挂了」长得一样 | `GlobalExceptionHandler.handleUnexpectedException` |
+这张表里有**两类**东西：**已接受的取舍**（不是待办，是有意选择的行为，改之前需要产品先给口径）
+和**真缺口**（记录在案、有明确修法方向，只是本轮不做）。完整表格在
+**[docs/设计决策.md](docs/设计决策.md) 第七节**，共 22 行，每行都带位置和影响。
 
-P1a 记在案的两条**已经关掉**：`categoryId` 不校验存在性（P1c-1 补上了 `CategoryMapper`，
-`ChargePackageServiceImpl` 现在会校验分类存在 + 类型匹配，见下方决策 12）；
-`ChargePackageDTO.categoryId` 缺 `@NotNull`（决策 8 的第一个 bug，已补）。
+其中最值得先看的三条：
 
----
+- **`end` 不校验 `endTime` 与 `startTime` 的关系，而 `settle` 要求前者严格大于后者。**
+ 校验放错了步骤：该在入口拦的没拦，等到了出口才拒。落进缝里的订单会永久停在 3 待结算，
+ `frozenAmount` 里的钱既不扣也不退，**而且那把枪的 `current_order_id` 永远指着它，
+ 从此再也建不了单** —— 管理端能把枪改回「空闲」，但没有任何字段能清 `currentOrderId`。
+ 已实测复现。
+- **`pay()` 完全不看 `pay_method`。** 现状自洽（`create()` 拦掉了非余额支付），但放开
+ `PayMethod.isSupported` 的那一天，一个「微信支付」订单会直接从余额扣钱，而且不报错。
+- **`settle` 的事件来源记成了 `SCHEDULED`，但全项目只有管理端一个调用点。**
+ 每一条结算事件都声称是系统自动做的，实际每一次都是运维点的。账没错，错的是叙事。
 
 ## 一些约定
 
@@ -621,6 +656,10 @@ P1a 记在案的两条**已经关掉**：`categoryId` 不校验存在性（P1c-1
 - **时间**一律 Java 侧 `LocalDateTime.now()` 生成，不用 `timestamp` 类型（2038 上限 + 隐式时区换算）；精度到毫秒
 - **并发控制**靠数据库条件更新 + 唯一索引，不用 `synchronized`
   （单实例有效、多实例失效；且 JDK 21 虚拟线程下 `synchronized` 会 pin 住载体线程）
+- **状态流转一律写成带 `from` 的条件更新**：`UPDATE ... WHERE id = ? AND status = #{from}`，
+ **返回 0 是正常的业务结果**（「这一步有人做过了」或「轮不到你做」），调用方必须检查它 ——
+ 绝不写成「先 SELECT 查状态、判一下、再 UPDATE」。判断和修改必须在**同一条语句**里完成，
+ 否则两个并发请求会读到同一个状态、各改一次。订单、钱包、权益三处都是这个形状
 - **不用外键**：InnoDB 外键检查会在父表加共享锁，与「枪状态高频更新 + 订单高频写入」冲突；
   完整性由 Java 校验 + 唯一索引 + 条件更新保证
 - **Redis 库号 1**，与同机其他项目（用 db 0）隔离

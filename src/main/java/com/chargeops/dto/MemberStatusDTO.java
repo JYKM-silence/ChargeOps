@@ -11,44 +11,44 @@ import java.io.Serializable;
 /**
  * 管理端启用 / 禁用车主
  *
- * <h2>★ 一、只有一个字段，为什么还值得单开一个 DTO</h2>
+ * 一、只有一个字段，为什么还值得单开一个 DTO
  *
  * <p>三个理由，都不是「整洁」：
  *
- * <p><b>★ 1. 用 {@code @RequestParam Integer status} 的话，
- * 这个类里的 {@code @Min/@Max} 一个都不会生效。</b>{@code @Valid} 只校验
+ * <p> 1. 用 {@code @RequestParam Integer status} 的话，
+ * 这个类里的 {@code @Min/@Max} 一个都不会生效。{@code @Valid} 只校验
  * {@code @RequestBody} 的对象，而 {@code @RequestParam} 上的约束要配合
  * 类级别的 {@code @Validated} 才会触发 —— 那个写法抛的是
  * {@code HandlerMethodValidationException}，而 {@code GlobalExceptionHandler}
- * 里<b>没有对应的分支</b>，于是它会落到兜底分支，前端拿到的是「未知错误」。
- * <b>一个 400 变成 500。</b>
+ * 里没有对应的分支，于是它会落到兜底分支，前端拿到的是「未知错误」。
+ * 一个 400 变成 500。
  *
- * <p><b>2. 一个裸的 {@code Integer} 没有地方写文档</b>：值域是
+ * <p>2. 一个裸的 {@code Integer} 没有地方写文档：值域是
  * {@code 0禁用 / 1正常}，{@code ?status=7} 光看签名完全看不出是错的。
  *
- * <p><b>3. 它是「将来会长大」的形状</b>：禁用车主大概率会需要「禁用原因」
+ * <p>3. 它是「将来会长大」的形状：禁用车主大概率会需要「禁用原因」
  * （现在 {@code member} 表里没有），那时加一个字段就行，
  * 不用把路径从 query 参数改成请求体（那会破坏已有客户端）。
  *
- * <h2>★ 二、用独立端点 {@code PUT /{id}/status} 而不是 {@code PUT /{id}} 带一个字段</h2>
+ * 二、用独立端点 {@code PUT /{id}/status} 而不是 {@code PUT /{id}} 带一个字段
  *
- * <p>车主的资料更新走的是<b>另一个 Controller</b>（{@code /api/member/me}），
- * 那一边<b>刻意没有</b> {@code status} 字段。两边的差别是身份面：车主改自己的
+ * <p>车主的资料更新走的是另一个 Controller（{@code /api/member/me}），
+ * 那一边刻意没有 {@code status} 字段。两边的差别是身份面：车主改自己的
  * 资料时不能碰 {@code status}（否则「禁用」就是一个请求就能绕过的功能），
- * 而管理端改别人的 {@code status} 正是这个端点的<b>全部职责</b>。
+ * 而管理端改别人的 {@code status} 正是这个端点的全部职责。
  * 做成同一个接口会更省代码，但会让「谁能改 status」重新变成一个需要判断的问题 ——
- * 现在它是<b>由路径划分的</b>：{@code /api/member/**} 是车主自己，
+ * 现在它是由路径划分的：{@code /api/member/**} 是车主自己，
  * {@code /api/admin/**} 是管理员。
  *
- * <h2>★★ 三、独立端点的另一个具体好处</h2>
+ * 三、独立端点的另一个具体好处
  *
- * <p>{@code MemberMapper.xml} 的 {@code update} 里<b>没有 {@code status} 列</b>，
+ * <p>{@code MemberMapper.xml} 的 {@code update} 里没有 {@code status} 列，
  * 而 {@code updateStatus} 是一条只有 {@code status} + 两个审计列的窄 SQL。
- * 两条写入路径分开 ⇒ 管理端禁用车主时<b>不可能顺手改掉他的昵称</b>，
+ * 两条写入路径分开 ⇒ 管理端禁用车主时不可能顺手改掉他的昵称，
  * 因为那条 SQL 里根本没有那一列。
  *
- * <p>★ 这和 {@code VehicleUpdateDTO} 排除 {@code isDefault} 是同一个手法：
- * <b>把「不该一起发生的事」变成「不可能一起发生的事」。</b>
+ * <p> 这和 {@code VehicleUpdateDTO} 排除 {@code isDefault} 是同一个手法：
+ * 把「不该一起发生的事」变成「不可能一起发生的事」。
  */
 @Data
 @Schema(description = "启用/禁用车主")
@@ -57,11 +57,11 @@ public class MemberStatusDTO implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * ★ {@code @NotNull} 是承重的：少了它，不传 status 会一路走到
+     * {@code @NotNull} 是承重的：少了它，不传 status 会一路走到
      * {@code UPDATE member SET status = NULL}，而 {@code member.status}
      * 是 {@code NOT NULL} → errno 1048 → HTTP 500 +「未知错误」。
      *
-     * <p>★ 值域用 {@code @Min/@Max} 卡死，而不是留给 Service 去判断 ——
+     * <p> 值域用 {@code @Min/@Max} 卡死，而不是留给 Service 去判断 ——
      * 这样错误提示是「状态只能是 0禁用、1正常」，而不是 Service 里那句拼出来的
      * 同义话。两处都校验是有意的：这里是给调用方的提示，Service 那里是兜底。
      */

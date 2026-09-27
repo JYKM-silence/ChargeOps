@@ -12,39 +12,12 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 /**
- * 车主端 - 文件上传（当前唯一的使用场景是换头像）
+ * 车主端 - 文件上传（目前只用于换头像）。路径 {@code /api/member/**}，
+ * 由 {@code JwtTokenMemberInterceptor} 保护，请求头名是 {@code authentication}（管理端是 {@code token}）。
+ * 和 {@code AdminUploadController} 内容一样但不合并：合并后只能落在两个拦截器都不管的路径上。
+ * 上传目录由 {@code /img/**} 匿名对外提供，所以写入口必须挂在 token 后面。
  *
- * <p>路径 {@code /api/member/**}，由 {@code JwtTokenMemberInterceptor} 统一保护，
- * <b>本类不需要写任何鉴权代码</b>（请求头里那个 {@code authentication} 由拦截器负责）。
- * 它返回的 URL 会被塞进 {@code MemberUpdateDTO.avatar} 再存进 {@code member.avatar}。
- *
- * <h2>★★ 一、为什么它和 {@code AdminUploadController} 是两个类，而不是一个 ★★</h2>
- *
- * <p>完整论证见 {@link AdminUploadController} 第一节，两句话概括：
- * <b>鉴权按路径前缀分工</b>（{@code /api/admin/**} 与 {@code /api/member/**} 各一个拦截器），
- * <b>两套 token 的请求头名字也不同</b>（{@code token} / {@code authentication}）——
- * 合并到一个 {@code /api/upload} 上，等于把它放到两个拦截器都不管的路径下，
- * 变成一个匿名可写的接口，而且不会有任何报错。
- *
- * <p>★ <b>两个类里各自只有一句转发</b>：白名单、UUID 命名、四条校验都只有
- * {@link FileUploadService} 里那一份，所以「分成两个类」不会带来「两处要同步改」。
- *
- * <h2>★ 二、头像和 {@code /me} 是两条独立的路</h2>
- *
- * <p>本接口<b>只负责把文件变成 URL</b>，不写 {@code member.avatar} ——
- * 换头像要等车主随后调 {@code PUT /api/member/me}，把返回的 URL 传进
- * {@code MemberUpdateDTO.avatar}。两步是刻意的：上传可以先做，
- * 用户在中途放弃换头像时也不会留下一次「头像已经变了」的副作用。
- *
- * <p>★ 这也是 {@code MemberUpdateDTO} 里 {@code avatar} 字段那行注释
- * 「只存 URL，不做上传」的实现侧：本接口负责前半句，那个 DTO 负责后半句。
- *
- * <h2>★ 三、为什么要登录才能上传</h2>
- *
- * <p>上传会往服务器磁盘（或对象存储）写一个真实文件，是一个有成本的写操作。
- * 放开成匿名接口，等于给任何人一个免费的文件托管 —— 而存下来的文件还会被
- * {@code /img/**} 匿名地提供出去。所以它必须挂在车主 token 后面，
- * 而不是做成「登录页也要用，所以先放行」。
+ * <p>它只把文件变成 URL，不写 {@code member.avatar}：换头像还要再调一次 {@code PUT /api/member/me}。
  */
 @RestController
 @RequestMapping("/api/member/upload")
@@ -58,12 +31,7 @@ public class MemberUploadController {
         this.fileUploadService = fileUploadService;
     }
 
-    /**
-     * 上传一张图片（头像），返回它的完整访问 URL
-     *
-     * <p>★ 参数名固定是 {@code file}，理由见 {@link AdminUploadController#upload}：
-     * 它是接口契约的一部分，靠参数名推断的话改个局部变量名就会把契约改掉。
-     */
+    /** 参数名固定是 {@code file}，前端表单字段名必须一致 */
     @PostMapping
     @Operation(summary = "上传图片（返回可访问的 URL）")
     public Result<String> upload(@RequestParam("file") MultipartFile file) {

@@ -16,30 +16,30 @@ import java.math.BigDecimal;
 /**
  * 新增充电站的请求体
  *
- * <h2>★★ 一、营业时间用 {@code String}，而且允许 {@code "24:00:00"}</h2>
+ * 一、营业时间用 {@code String}，而且允许 {@code "24:00:00"}
  *
  * <p>{@code openTime} / {@code closeTime} 是字符串（{@code "HH:mm"} 或
- * {@code "HH:mm:ss"}），<b>不是</b> {@code LocalTime} —— 因为 {@code "24:00:00"}
+ * {@code "HH:mm:ss"}），不是 {@code LocalTime} —— 因为 {@code "24:00:00"}
  * （表示「到当天结束」）在 {@code LocalTime} 的定义域之外，它的上限是
- * {@code 23:59:59.999999999}。更本质的说法：<b>MySQL 的 {@code TIME} 不是
- * 「一天中的时刻」，而是有符号时长（±838:59:59）</b>，这才是 {@code '24:00:00'}
+ * {@code 23:59:59.999999999}。更本质的说法：MySQL 的 {@code TIME} 不是
+ * 「一天中的时刻」，而是有符号时长（±838:59:59），这才是 {@code '24:00:00'}
  * 合法的原因，把它映射成 {@code LocalTime} 是范畴错误。
  *
- * <p>★ 这两个字段有<b>字段初始值</b>（{@code "00:00:00"} / {@code "24:00:00"}），
- * 含义是「全天营业」—— 不能用 DDL 的 {@code DEFAULT} 兜底：insert 是<b>全列插入</b>，
+ * <p> 这两个字段有字段初始值（{@code "00:00:00"} / {@code "24:00:00"}），
+ * 含义是「全天营业」—— 不能用 DDL 的 {@code DEFAULT} 兜底：insert 是全列插入，
  * 传 null 会直接撞 {@code NOT NULL}（errno 1048），这个坑集成测试第一次跑就踩到了。
  * 默认值会出现在 Swagger 文档里。
  *
- * <h2>★★ 二、{@code closeTime} 必须晚于 {@code openTime}，所以【不支持跨夜营业】</h2>
+ * 二、{@code closeTime} 必须晚于 {@code openTime}，所以【不支持跨夜营业】
  *
- * <p>{@code "22:00"–"06:00"} 这种夜间站点<b>表达不了</b>：只有一对 open/close，
- * 没有任何字段能表示「结束时间是次日」。<b>这是从 DDL 继承来的限制，
- * 不是本轮漏掉的。</b>校验（{@code closeMinute > openMinute}）放在
- * {@code StationServiceImpl} 里，因为它是<b>跨字段</b>的语义检查，
+ * <p>{@code "22:00"–"06:00"} 这种夜间站点表达不了：只有一对 open/close，
+ * 没有任何字段能表示「结束时间是次日」。这是从 DDL 继承来的限制，
+ * 不是本轮漏掉的。校验（{@code closeMinute > openMinute}）放在
+ * {@code StationServiceImpl} 里，因为它是跨字段的语义检查，
  * 单个字段上的注解管不了两个字段之间的关系。真要支持跨夜，要加「次日标记」
  * 或者改成两段营业时间 —— 那是 schema 变更。
  *
- * <h2>★ 三、经纬度是 {@code BigDecimal}，不是 {@code double}</h2>
+ * 三、经纬度是 {@code BigDecimal}，不是 {@code double}
  *
  * <p>{@code decimal(10,6)} 对应约 0.1 米的精度。用 {@code double} 的话经度会有
  * 浮点漂移，实际后果是<strong>地图上偏移几十米</strong> ——
@@ -54,22 +54,22 @@ public class StationDTO implements Serializable {
     /**
      * 全天营业的起始时刻
      *
-     * <p>★ <b>公开常量，而不是在字段上写一遍字面量。</b>
-     * 字段初始值<b>挡不住显式的 {@code "openTime": null}</b>（Jackson 照常调
+     * <p> 公开常量，而不是在字段上写一遍字面量。
+     * 字段初始值挡不住显式的 {@code "openTime": null}（Jackson 照常调
      * setter 把 null 写进去），所以 {@code StationServiceImpl} 必须再兜一次底，
-     * 而那一次兜底要用的值和这里的初始值<b>必须是同一个</b> —— 写成两个字面量的话，
+     * 而那一次兜底要用的值和这里的初始值必须是同一个 —— 写成两个字面量的话，
      * 改了一处忘另一处，表现是「不传是全天营业、传 null 是一天 23 小时」
      * 这种没人会想到去查的事。
      */
     public static final String DEFAULT_OPEN_TIME = "00:00:00";
 
-    /** ★ <b>是 {@code "24:00:00"}，不是 {@code "00:00:00"}</b> —— 后者会让新站点默认「零点就关门」 */
+    /**  是 {@code "24:00:00"}，不是 {@code "00:00:00"} —— 后者会让新站点默认「零点就关门」 */
     public static final String DEFAULT_CLOSE_TIME = "24:00:00";
 
     /**
      * 站点编码，如 {@code "ST-440300-0001"}，唯一索引 {@code uk_station_code}
      *
-     * <p>★ 约束刻意宽松（只要求是字母数字和连字符）：编码是对外可见的标识，
+     * <p> 约束刻意宽松（只要求是字母数字和连字符）：编码是对外可见的标识，
      * 各地区、各运营商的命名习惯不同，用一个精确的正则去卡
      * （比如强制 {@code ST-\\d{6}-\\d{4}}）会把合法的编码挡在门外。
      * 真正的约束是唯一性，而那由数据库守。
@@ -93,7 +93,7 @@ public class StationDTO implements Serializable {
     @Size(max = 32, message = "省不能超过 32 个字符")
     private String province;
 
-    /** 城市。★ 走索引 {@code idx_station_city_status} 的第一列，所以按城市筛选很快 */
+    /** 城市。 走索引 {@code idx_station_city_status} 的第一列，所以按城市筛选很快 */
     @Schema(description = "市", example = "深圳市")
     @Size(max = 32, message = "市不能超过 32 个字符")
     private String city;
@@ -109,7 +109,7 @@ public class StationDTO implements Serializable {
     /**
      * 经度，{@code decimal(10,6)}
      *
-     * <p>★ 范围校验是有价值的：经纬度写反是一个经典错误，而
+     * <p> 范围校验是有价值的：经纬度写反是一个经典错误，而
      * {@code (113.9, 22.5)} 反过来变成 {@code (22.5, 113.9)} 之后仍然是一个
      * 合法的坐标 —— 只是落在完全不同的地方。加了范围之后，
      * 被交换的一对里至少有一个必然越界（{@code 113.9} 超出纬度上限）。
@@ -128,7 +128,7 @@ public class StationDTO implements Serializable {
     @Size(max = 20, message = "服务电话不能超过 20 个字符")
     private String servicePhone;
 
-    /** ★ 默认 {@code "00:00:00"}，即全天营业 */
+    /**  默认 {@code "00:00:00"}，即全天营业 */
     @Schema(description = "开始营业时间，HH:mm 或 HH:mm:ss", example = "00:00:00",
             defaultValue = "00:00:00")
     @Pattern(regexp = "^([01]\\d|2[0-3]):[0-5]\\d(:[0-5]\\d)?$",
@@ -136,13 +136,13 @@ public class StationDTO implements Serializable {
     private String openTime = DEFAULT_OPEN_TIME;
 
     /**
-     * 结束营业时间（<b>不含</b>）
+     * 结束营业时间（不含）
      *
-     * <p>★ 允许 {@code "24:00:00"} —— 这是<b>唯一</b>一个 {@code LocalTime}
+     * <p> 允许 {@code "24:00:00"} —— 这是唯一一个 {@code LocalTime}
      * 装不下的值，也正是这两个字段用 {@code String} 的原因。默认就是它（全天营业），
-     * <b>不是</b> {@code "00:00:00"}（那会让新站点默认「零点就关门」）。
+     * 不是 {@code "00:00:00"}（那会让新站点默认「零点就关门」）。
      *
-     * <p>★ 必须晚于 {@code openTime}，因此<b>不支持跨夜营业</b>，见类注释第二节。
+     * <p> 必须晚于 {@code openTime}，因此不支持跨夜营业，见类注释第二节。
      */
     @Schema(description = "结束营业时间（不含），24:00:00 表示到当天结束",
             example = "24:00:00", defaultValue = "24:00:00")
@@ -155,7 +155,7 @@ public class StationDTO implements Serializable {
     private BigDecimal parkingFee;
 
     /**
-     * ★ {@code 0停用 1启用 2维护中} —— <b>三个值</b>，
+     * {@code 0停用 1启用 2维护中} —— 三个值，
      * 所以用不了只在 0/1 之间二分的 {@code StatusConstant}。见 {@code StationStatus}。
      */
     @Schema(description = "状态：0停用 1启用 2维护中", example = "1", defaultValue = "1")

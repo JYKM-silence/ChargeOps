@@ -1,10 +1,7 @@
 package com.chargeops.exception;
 
 /**
- * 密码错误
- *
- * <p>「密码错误」和「账号不存在」分开抛的取舍，见
- * {@link AccountNotFoundException} 的注释 —— 对外可能应该合并成一句话。
+ * 密码错误。和「账号不存在」分开抛的取舍见 {@link AccountNotFoundException}。
  */
 public class PasswordErrorException extends BaseException {
 

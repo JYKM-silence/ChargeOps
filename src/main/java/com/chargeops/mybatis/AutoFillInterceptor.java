@@ -21,50 +21,50 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 公共字段自动填充 —— 用 <b>MyBatis 插件</b>实现，不是 Spring AOP
+ * 公共字段自动填充 —— 用 MyBatis 插件实现，不是 Spring AOP
  *
- * <h2>★ 为什么不是切面：一个真实踩过的坑</h2>
+ * 为什么不是切面：一个真实踩过的坑
  *
  * <p>这个类最初写成 {@code @Aspect} + {@code @Pointcut("@annotation(AutoFill)")}，
- * 也就是大多数教程的写法。它<b>编译通过、启动成功、一个报错都没有，但永远不生效</b>。
+ * 也就是大多数教程的写法。它编译通过、启动成功、一个报错都没有，但永远不生效。
  * 排查时 aspectjweaver 在、自动代理创建器注册了、切面 Bean 存在、切点表达式也匹配
- * {@code StaffMapper.insert} —— 最后发现 {@code staffMapper} <b>不是 Spring AOP 代理</b>。
+ * {@code StaffMapper.insert} —— 最后发现 {@code staffMapper} 不是 Spring AOP 代理。
  *
- * <p><b>根因：MyBatis 的 Mapper 永远不会被 Spring AOP 代理。</b>
+ * <p>根因：MyBatis 的 Mapper 永远不会被 Spring AOP 代理。
  * 那个 bean 的实例是 {@code jdk.proxy2.$Proxy123}，看着像动态代理，
- * 很容易误判成「代理生效了」，但那其实是 <b>MyBatis 自己的 {@code MapperProxy}</b>。
+ * 很容易误判成「代理生效了」，但那其实是 MyBatis 自己的 {@code MapperProxy}。
  * 机制上：Mapper 的 bean 定义 class 是 {@code MapperFactoryBean}（一个 FactoryBean），
  * 会走 BeanPostProcessor 的是这个工厂对象，而真正被调用的 {@code MapperProxy}
- * 由 {@code getObject()} 返回 —— 那一步发生在<b>所有 BeanPostProcessor 之后</b>，
+ * 由 {@code getObject()} 返回 —— 那一步发生在所有 BeanPostProcessor 之后，
  * 而 Spring AOP 的自动代理正是靠在 {@code postProcessAfterInitialization} 织入的。
  *
- * <p><b>结论：{@code @AutoFill} 标在 Mapper 方法上 + Spring AOP 切面 = 静默不生效。</b>
+ * <p>结论：{@code @AutoFill} 标在 Mapper 方法上 + Spring AOP 切面 = 静默不生效。
  * 不是配置问题，是机制上不可能：调 {@code proxy-target-class}、换 CGLIB、
  * 加 {@code @EnableAspectJAutoProxy} 全都没用，方向就不对。
  *
- * <h2>为什么改成 MyBatis 插件</h2>
+ * 为什么改成 MyBatis 插件
  *
- * <p>插件（{@code Interceptor}）在 <b>MyBatis 自己的执行链</b>上工作，拦的是
+ * <p>插件（{@code Interceptor}）在 MyBatis 自己的执行链上工作，拦的是
  * {@code Executor.update()}，和 Spring AOP 无关，所以机制上一定生效。
  * 顺带的语义好处：填充发生在 SQL 执行前的最后一刻，审计字段本来就该记
  * 「真正落库那一刻」，早填反而可能在长事务里记下一个偏早的时间。
  *
- * <h2>为什么只拦 {@code Executor.update}</h2>
+ * 为什么只拦 {@code Executor.update}
  *
- * <p>MyBatis 把 <b>insert / update / delete 全部归到 {@code update}</b>
+ * <p>MyBatis 把 insert / update / delete 全部归到 {@code update}
  * （{@code SqlSession.insert()} 内部调的就是 {@code update()}），
  * 所以拦这一个就覆盖了所有写操作，而查询一次都不会被拦到。
  *
- * <h2>注册方式</h2>
+ * 注册方式
  *
  * <p>不用配置类：{@code MybatisAutoConfiguration} 的构造器上有个
  * {@code ObjectProvider<Interceptor[]>}，会把容器里所有 {@code Interceptor} Bean
  * 收集起来传给 {@code SqlSessionFactoryBean.setPlugins()}，这里只需一个 {@code @Component}。
  *
- * <p>★ 这也意味着「插件到底装上了没有」可以验证：装上才会有填充行为，
+ * <p> 这也意味着「插件到底装上了没有」可以验证：装上才会有填充行为，
  * {@code StaffMapperTest} 里那三条断言就是它的探针。
  *
- * <p>和 {@link AutoFill} 的约定不变：仍标在 Mapper 方法上，实体必须是<b>第一个参数</b>。
+ * <p>和 {@link AutoFill} 的约定不变：仍标在 Mapper 方法上，实体必须是第一个参数。
  */
 @Intercepts(@Signature(
         type = Executor.class,
@@ -78,11 +78,11 @@ public class AutoFillInterceptor implements Interceptor {
     /**
      * MyBatis 把方法参数包装成 ParamMap 时，第一个参数的固定别名。
      *
-     * <p>方法只有一个参数且没写 {@code @Param} 时对象是<b>原样</b>传下来的（不是 Map）；
+     * <p>方法只有一个参数且没写 {@code @Param} 时对象是原样传下来的（不是 Map）；
      * 一旦写了 {@code @Param} 或有多个参数，参数就被包进 {@code MapperMethod.ParamMap}，
      * 第一个参数此时有两个固定别名：{@code arg0}（按位置）和 {@code param1}（按序号）。
      *
-     * <p>★ 用 {@code containsKey} 而不是 {@code get}：{@code ParamMap} 重写了 {@code get}，
+     * <p> 用 {@code containsKey} 而不是 {@code get}：{@code ParamMap} 重写了 {@code get}，
      * key 不存在时抛 {@code BindingException}，而 {@code containsKey} 是父类 HashMap 的实现。
      */
     private static final String[] FIRST_PARAM_KEYS = {"arg0", "param1"};
@@ -94,8 +94,8 @@ public class AutoFillInterceptor implements Interceptor {
      * 都会走到这里，缓存后每条语句只解析一次。{@code ConcurrentHashMap} 是因为
      * {@code intercept} 会在多个业务线程上并发调用。
      *
-     * <p>★ 值用 {@link Optional} 包一层是为了把「解析过了，这个方法没标
-     * {@code @AutoFill}」也缓存下来 —— <b>缓存「没有」和缓存「有」一样重要</b>，
+     * <p> 值用 {@link Optional} 包一层是为了把「解析过了，这个方法没标
+     * {@code @AutoFill}」也缓存下来 —— 缓存「没有」和缓存「有」一样重要，
      * 否则每个没标注解的 update 每次调用都要重新 {@code getMethods()} 扫一遍，
      * 而它每次返回新数组，在热点路径上是实打实的垃圾。
      * （{@code ConcurrentHashMap} 不允许 null，所以不能直接缓存 null。）
@@ -180,7 +180,7 @@ public class AutoFillInterceptor implements Interceptor {
     /**
      * 真正写字段。
      *
-     * <p>★ setter 找不到就<b>直接抛异常</b>，不做「打条日志继续跑」：审计字段为 null
+     * <p> setter 找不到就直接抛异常，不做「打条日志继续跑」：审计字段为 null
      * 没有任何即时症状（接口照样返回成功，可空列照样收），只有几个月后想查
      * 「这条记录是谁建的」才会发现查不到，那时已无从追溯。抛异常能让错误在
      * 写下 {@code @AutoFill} 的当天就暴露。

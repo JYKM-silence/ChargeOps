@@ -18,17 +18,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 车主端 - 我的钱包
+ * 车主端 - 我的钱包。路径 {@code /api/member/**}，由 {@code JwtTokenMemberInterceptor} 保护，
+ * BaseContext 里是车主 id，三个端点都没有 {@code memberId} 参数。
  *
- * <p>路径 {@code /api/member/wallet/**}，由 {@code JwtTokenMemberInterceptor} 保护。
+ * <p>只有车主自助的三个操作；冻结 / 结算 / 退款虽然也在 {@link WalletService} 上，
+ * 但那是订单流程调的，不暴露成 HTTP —— 让客户端直接触发扣款等于把资金安全交给客户端。
  *
- * <p>★ 三个端点都<b>没有 memberId 参数</b> —— 身份只从 token 取：钱包天然是「一个人的一个东西」，
- * 客户端没有表达「操作别人钱包」的能力。
- *
- * <p>★ 这里只有车主自助的三个操作。冻结 / 结算 / 退款虽然也在 {@link WalletService} 上，
- * 但它们是<b>订单流程</b>调的，不暴露成 HTTP —— 让客户端能直接触发扣款，等于把资金安全交给客户端。
- *
- * <p>★ 充值接口是<b>演示用</b>的，直接给余额加钱，没有接真实支付；上限见 {@link WalletRechargeDTO}。
+ * <p>充值接口是演示用的，直接给余额加钱。
  */
 @RestController
 @RequestMapping("/api/member/wallet")

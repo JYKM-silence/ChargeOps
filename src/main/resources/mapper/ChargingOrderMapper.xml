@@ -4,14 +4,13 @@
 <mapper namespace="com.chargeops.mapper.ChargingOrderMapper">
 
     <!--
-      ★★ 这份 XML 只有一条规则，但它贯穿九个 <update>：★★
-        每条状态流转都写成
-            UPDATE charging_order SET status = <目标> ... WHERE id = ? AND status = <来源>
-        然后**调用方必须检查返回的行数**。这行 WHERE 就是**并发控制本身**
-        （写成「先 SELECT 再 UPDATE」，两个并发请求会同时读到 1 然后都更新成功，
-        冻结两次钱）。完整论证见接口注释第一节。
+      贯穿全部 <update> 的一条规则：状态流转写成
 
-      ★ 这些语句都**没有** update_user —— 理由见接口注释第二节。
+          UPDATE charging_order SET status = <目标> ... WHERE id = ? AND status = <来源>
+
+      调用方必须检查影响行数。这行 WHERE 就是并发控制本身，写成
+      「先 SELECT 再 UPDATE」会让两个并发请求同时读到 1 然后都更新成功。
+      这些语句都没有 update_user。
     -->
 
     <sql id="Base_Column_List">
@@ -24,10 +23,7 @@
         create_user, update_user
     </sql>
 
-    <!--
-      建单。★ 唯一标了 @AutoFill 的语句 —— 订单一定是登录用户创建的，
-        不存在「设备创建订单」这条路，所以插件填的 create_user 是对的。
-    -->
+    <!-- 建单。唯一标了 @AutoFill 的语句：订单一定是登录用户创建的 -->
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO charging_order (order_no, member_id, vehicle_id, plate_no, station_id,
                                     charger_id, connector_id, member_package_id, tariff_template_id,
@@ -48,10 +44,7 @@
         WHERE id = #{id}
     </select>
 
-    <!--
-      车主端详情。★ member_id 进了 WHERE，「忘了做归属校验」在这个形状下写不出来 ——
-        忘传 memberId 是查不到数据，不是查到别人的数据。
-    -->
+    <!-- 车主端详情。member_id 进了 WHERE：忘传是查不到数据，不是查到别人的 -->
     <select id="getByIdAndMember" resultType="com.chargeops.entity.ChargingOrder">
         SELECT
         <include refid="Base_Column_List"/>
@@ -61,15 +54,11 @@
     </select>
 
     <!--
-      ★ status 可空：不传就是「全部订单」，传了就走 idx_order_member_status。
-        用 <if> 而不是写两条语句 —— 两条语句的列清单和排序必须永远一致，
-        那是两份要同步维护的东西。
+      status 可空：不传就是全部订单，传了走 idx_order_member_status。用 <if> 而不是写
+      两条语句，省得列清单和排序要同步维护两份。
 
-      ★ ORDER BY 末尾的 id 是为了**全序**：同一毫秒建的两笔订单在两次请求里的
-        相对顺序必须一致，否则翻页时会重复或漏行。
-
-      ★ 没有 LIMIT：分页由 PageHelper.startPage 在拦截器层加，
-        手写 LIMIT 会让 PageHelper 算出错误的 total。
+      ORDER BY 末尾的 id 是为了全序：同一毫秒建的两笔订单在两次请求里的相对顺序
+      必须一致，否则翻页时会重复或漏行。不写 LIMIT，分页由 PageHelper 在拦截器层加。
     -->
     <select id="pageByMember" resultType="com.chargeops.entity.ChargingOrder">
         SELECT
@@ -83,31 +72,16 @@
     </select>
 
     <!--
-      ★★ 管理端订单分页 —— 四个流程接口（start/end/settle/refund）的取 id 入口。★★
+       管理端订单分页，也是四个流程接口（start/end/settle/refund）的取 id 入口。
+       分页同样交给 PageHelper，不写 LIMIT。ORDER BY 末尾的 id 理由同 pageByMember。
 
-      ★ 分页由 PageHelper.startPage 在拦截器层加，这里**不写 LIMIT**。
+       memberIds 的三态是承重的：null 不按车主过滤，非空走 IN (...)，空列表走
+       AND 1 = 0。最后一支绝不能省 —— 让空列表落到「无条件」那支，按一个不存在的
+       手机号搜订单会返回全平台所有订单，而且列表有数据、分页对、不报错，看不出问题。
+       （写成 IN () 本身也是语法错误，两头都走不通，只能显式给恒假谓词。）
 
-      ★ ORDER BY 末尾的 id 是为了全序（同一毫秒建的两笔订单在两次请求里的
-        相对顺序必须一致），理由同 pageByMember。
-
-      ★★ memberIds 的三态，这一段是承重的：★★
-        - null     → 不按车主过滤（管理端没填手机号，这是「全部订单」）
-        - 非空列表 → AND member_id IN (...)
-        - **空列表** → AND 1 = 0
-
-        最后那一支**绝不能省**。写成
-            <if test="memberIds != null and memberIds.size() > 0"> ... </if>
-        然后让空列表落到「无条件」那颗分支上，后果是：
-        **按一个不存在的手机号搜订单，返回全平台所有订单。**
-        而且它会看起来完全正常 —— 列表有数据、分页对、没有报错，
-        只是那些订单不属于你搜的那个人。
-
-        代价是 `IN ()` 本身也不合法（MySQL errno 1064），所以
-        「拼一个空 IN」这条路两头都走不通，必须显式给一个恒假谓词。
-
-      ★ query.orderNo 用前缀匹配：完整单号下和 = 等价（走 uk_order_no），
-        而半截单号只有前缀能搜到。两侧 % 会让索引失效且没有真实场景。
-        完整论证见 AdminOrderPageQueryDTO 第二节。
+       orderNo 用前缀匹配：完整单号下和 = 等价（走 uk_order_no），半截单号只有
+       前缀能搜到；两侧 % 会让索引失效。
     -->
     <select id="pageForAdmin" resultType="com.chargeops.entity.ChargingOrder">
         SELECT
@@ -145,11 +119,10 @@
     </select>
 
     <!--
-      ★ 某把枪上还占着它的订单。走 idx_order_connector_status。
+      某把枪上还占着它的订单。走 idx_order_connector_status。
 
-      ★ 返回列表而不是一条：真有两条时（历史脏数据、并发建单）**必须让调用方
-        看见**，而不是 LIMIT 1 随便挑一条 —— 被挑中的那条决定了后续所有金额，
-        而另一条会永远停在充电中。
+      返回列表而不是一条：真有两条时（历史脏数据、并发建单）必须让调用方看见，
+      不能 LIMIT 1 随便挑一条，因为被挑中的那条决定了后续所有金额。
     -->
     <select id="listHoldingByConnector" resultType="com.chargeops.entity.ChargingOrder">
         SELECT
@@ -164,14 +137,11 @@
     </select>
 
     <!--
-      ★ 某个车主的某辆车还占着它的订单。
+      某个车主的某辆车还占着它的订单。带 member_id 不只是为了走索引：语义是
+      「你的车现在有没有在充」，将来车辆支持过户时回答的仍是对的那个人。
 
-      ★ 带 member_id 不只是为了走索引：语义是「**你的**车现在有没有在充」，
-        将来车辆支持过户时，回答的仍然是对的那个人。
-
-      ★ charging_order 上**没有** vehicle_id 索引，这是刻意的 —— 进行中的订单
-        在每个车主那里都是个位数，先按 idx_order_member_status 收窄再过滤车辆，
-        比为一个只用于「有没有」的列单独建索引便宜。
+      charging_order 上没有 vehicle_id 索引，这是刻意的：进行中的订单在每个车主
+      那里都是个位数，先按 idx_order_member_status 收窄再过滤车辆更便宜。
     -->
     <select id="listHoldingByVehicle" resultType="com.chargeops.entity.ChargingOrder">
         SELECT
@@ -187,19 +157,16 @@
     </select>
 
     <!--
-      ★★ 下面两条是站点 / 桩的删除守卫。★★
+      下面两条是站点 / 桩的删除守卫。
 
-      ★ <b>status 写在最前面，而设备列（station_id / charger_id）写在后面</b> ——
-        这个顺序是承重的，不是排版：
-          写对了走 idx_order_status_create，先按状态把范围收窄到「在途的少数订单」，
-          再逐行过滤站点/桩；
-          写反了会被 idx_order_station_create 服务，扫完这个站的全部历史订单
-          再过滤状态 —— 一个运营两年的站点有几十万行历史。
-        ★ 优化器选哪条索引取决于统计信息，所以改这两条 SQL 时
-          <b>要重新看一次执行计划</b>，不能只看它「跑得快」就以为没事。
+      status 写在最前面、设备列写在后面，这个顺序是承重的：写对了走
+      idx_order_status_create，先按状态收窄到在途的少数订单再逐行过滤站点；
+      写反了会被 idx_order_station_create 服务，扫完这个站的全部历史订单才过滤
+      状态，而一个运营两年的站点有几十万行历史。
 
-      ★ 只 COUNT 不取行：调用方要的是「有几笔」，
-        把整行捞回来再数长度是白白的网络和内存开销。
+      优化器选哪条索引取决于统计信息，所以改这两条时要重新看一次执行计划。
+
+      只 COUNT 不取行：调用方要的是「有几笔」，把整行捞回来再数长度是白开销。
     -->
     <select id="countByStation" resultType="int">
         SELECT COUNT(*)
@@ -222,17 +189,14 @@
     </select>
 
     <!--
-      ★ 权益退款口径的权威判据：这份权益被多少笔订单用过。
+      权益退款口径的权威判据：这份权益被多少笔订单用过。
 
-        ★ status <> 8 是**补集**，不是笔误，也不是漏了别的状态 ——
-          只有「8 已取消」意味着「这份权益一点没被消耗」（取消会 releaseLock
-          且余量不动）。写成 IN (…) 的话，将来加新状态时默认落到「不算被用过」
-          那一边，也就是默认退钱。完整论证见 ChargingOrderMapper#countByPackage。
+      status <> 8 是补集，不是笔误：只有「8 已取消」意味着这份权益一点没被消耗
+      （取消会 releaseLock 且余量不动）。写成 IN (...) 的话，将来加新状态时默认
+      落到「不算被用过」那一边，也就是默认退钱。
 
-        ★ member_package_id 是可空列（一笔订单可以完全不用权益），
-          这里用 `= #{packageId}` 而不是 `IS NULL` 那一路 —— 传 null 进来
-          会返回 0 行（SQL 的 NULL 比较恒不成立），而那不是错的答案：
-          「没有权益的订单」确实没有「用过某份权益」。调用方保证不传 null。
+      member_package_id 是可空列，传 null 进来会返回 0 行（SQL 的 NULL 比较恒不
+      成立），那不是错的答案。调用方保证不传 null。
     -->
     <select id="countByPackage" resultType="int">
         SELECT COUNT(*)
@@ -242,19 +206,16 @@
     </select>
 
     <!--
-      ★ 支付失败兜底扫描的取件口。走 idx_order_status_create (status, create_time) ——
-        status = 4 等值先收窄到「待支付」这个小集合，settle_time 是残余过滤。
+      支付失败兜底扫描的取件口。走 idx_order_status_create (status, create_time)：
+      status = 4 等值先收窄到待支付这个小集合，settle_time 是残余过滤。
 
-      ★★ 账龄必须是 settle_time，不能是 create_time ★★
-        一笔充了 8 小时、1 分钟前才结束的订单，create_time 很旧 ——
-        按它扫会在用户正在付款页面上输密码的时候把订单判成失败。
-        完整论证见接口注释。
+      账龄必须是 settle_time 而不是 create_time：一笔充了 8 小时、1 分钟前才结束
+      的订单 create_time 很旧，按它扫会在用户正在付款页输密码时把订单判成失败。
 
-      ★ settle_time IS NULL 的行扫不到（NULL < ? 是 NULL 即 false）。
-        这是刻意的：失败方向是「不处理」而不是「误判」。
+      settle_time IS NULL 的行扫不到（NULL < ? 是 NULL 即 false），这是刻意的：
+      失败方向是「不处理」而不是「误判」。
 
-      ★ 排序末尾的 id 是为了全序：settle_time 会重复，缺了它
-        「这一轮取哪 200 笔」不确定，而扫描是反复跑的。
+      排序末尾的 id 是为了全序：settle_time 会重复，而扫描是反复跑的。
     -->
     <select id="listStalePendingPay" resultType="com.chargeops.entity.ChargingOrder">
         SELECT
@@ -266,14 +227,13 @@
         LIMIT #{limit}
     </select>
 
-    <!-- ==================== 状态流转 ==================== -->
+    <!-- 状态流转 -->
 
     <!--
-      ★ 单列 UPDATE，不带 status 的流转（改的是资料不是状态），但条件里仍然有
-        status = 1：只对还没启动的订单有效，理由见接口注释。
+      改的是资料不是状态，但条件里仍然有 status = 1：只对还没启动的订单有效。
 
-      ★ member_package_id IS NULL 让这次补写是幂等的：重复调用第二次影响 0 行，
-        而不是把已经绑好的权益换掉。
+      member_package_id IS NULL 让这次补写是幂等的：重复调用第二次影响 0 行，
+      而不是把已经绑好的权益换掉。
     -->
     <update id="bindMemberPackage">
         UPDATE charging_order
@@ -287,9 +247,9 @@
     <!--
       1 待启动 → 2 充电中
 
-      ★ start_meter_kwh 是**设备上报的累计读数**，不是从 0 开始：总电量靠
-        end - start 算，不读绝对值。读表失败时调用方传 NULL，**不填 0** ——
-        填 0 会让 total = end - 0 = 整个电表读数，算出一笔几百度的订单。
+      start_meter_kwh 是设备上报的累计读数，不是从 0 开始：总电量靠 end - start
+      算，不读绝对值。读表失败时调用方传 NULL 而不是填 0，填 0 会让
+      total = end - 0 = 整个电表读数，算出一笔几百度的订单。
     -->
     <update id="markStarted">
         UPDATE charging_order
@@ -305,13 +265,11 @@
     <!--
       2 充电中 → 3 待结算
 
-      ★ 只写「充电结束」这个事实，**不写金额**：结算可能失败（电价规则有缺口、
-        电量数据缺失），而失败**不应该让「充电已经结束了」这个事实回滚掉** ——
-        枪确实停了，车确实被充过。
+      只写「充电结束」这个事实，不写金额：结算可能失败（电价规则有缺口、电量数据
+      缺失），而失败不该让「充电已经结束了」回滚掉，枪确实停了、车确实被充过。
 
-      ★ total_energy_kwh 由调用方算好传进来（end - start），不在这里用 SQL 算：
-        电表读数可能缺失（NULL），NULL - NULL 在 MySQL 里是 NULL，
-        在 Java 里是一次明确的判断 —— 把这种判断放在能抛异常的一侧。
+      total_energy_kwh 由调用方算好传进来，不在这里用 SQL 算：电表读数可能缺失
+      （NULL），NULL - NULL 在 MySQL 里还是 NULL，在 Java 里是一次明确的判断。
     -->
     <update id="markEnded">
         UPDATE charging_order
@@ -330,13 +288,11 @@
     <!--
       3 待结算 → 4 待支付
 
-      ★★ 金额三兄弟在这里一次性写定，之后**再也不改**。total_amount 必须是
-         BillingEngine 的 totalAmount()，即「已舍入分段金额之和」，
-         **绝不能写「总电量 × 综合单价」** —— 那个值会偶尔和分段之和对不上，
-         而差异出现在财务报表上时已经没人能还原它当初是怎么算的。
+      金额在这里一次性写定，之后再也不改。total_amount 必须是 BillingEngine 的
+      totalAmount()，即已舍入分段金额之和，绝不能写「总电量 × 综合单价」：那个值
+      会偶尔和分段之和对不上，而差异出现在财务报表上时已经没人能还原它怎么算的。
 
-      ★ settle_time 是**事实记录，不是幂等判据**：幂等判据是 `status = 3`。
-        只判 settle_time IS NULL 的话，结算和另一条流转会双双通过。
+      settle_time 是事实记录，不是幂等判据，幂等判据是 status = 3。
     -->
     <update id="markSettled">
         UPDATE charging_order
@@ -355,16 +311,14 @@
     <!--
       4 待支付 / 6 支付失败 → 5 已支付
 
-      ★★ 这一行**必须**在 walletService.settle 之前执行，且同事务。★★
-         钱包侧的 uk(order_id, type) 是最后一道防线，而它一旦被触发，整个事务
-         已经被标记回滚了（Spring 在 RuntimeException 上标 rollback-only），
-         调用方**即使 catch 住，提交时仍然会失败** —— 所以订单侧必须先有自己的
-         判断，就是这行 WHERE。见 WalletService 的类注释。
+      必须在 walletService.settle 之前执行且同事务。钱包侧的 uk(order_id, type)
+      是最后一道防线，而它一旦被触发整个事务已经被标记回滚（Spring 在
+      RuntimeException 上标 rollback-only），调用方即使 catch 住提交时仍会失败，
+      所以订单侧必须先有自己的判断，就是这行 WHERE。见 WalletService 类注释。
 
-      ★ 来源是**两个**状态：6 支付失败在这里被再次接受 —— 用户充完值回来点第二次
-         支付时订单正停在 6 上，只认 4 的话那个按钮会永远返回「状态不对」，
-         而钱还冻着。5 不能重入：已支付的订单只能退款，重收一次钱会让
-         「一笔订单最多一条扣款流水」这条对账基础失效。见 OrderStatus 的流转表。
+      来源是两个状态：6 在这里被再次接受，用户充完值回来点第二次支付时订单正停在
+      6 上，只认 4 那个按钮会永远返回「状态不对」而钱还冻着。5 不能重入：已支付的
+      订单只能退款，重收一次钱会让「一笔订单最多一条扣款流水」这条对账基础失效。
     -->
     <update id="markPaid">
         UPDATE charging_order
@@ -375,7 +329,7 @@
           AND status IN (4, 6)
     </update>
 
-    <!-- 4 待支付 → 6 支付失败。★ 钱还冻着；充值后再支付会走 markPaid 的 6→5 那条边 -->
+    <!-- 4 待支付 → 6 支付失败。 钱还冻着；充值后再支付会走 markPaid 的 6→5 那条边 -->
     <update id="markPayFailed">
         UPDATE charging_order
         SET status = 6,
@@ -386,11 +340,11 @@
     </update>
 
     <!--
-      ★ **只有 5 能退款**。4 待支付不能退 —— 那时候钱还没扣，待支付订单要「退」的
-        是冻结的钱，那是**取消**路径的事。
+      只有 5 能退款。4 待支付不能退：那时候钱还没扣，待支付订单要「退」的是冻结
+      的钱，那是取消路径的事。
 
-      ★ refund_amount 单独一列而不是复用 pay_amount：它和 pay_amount 可能不等
-        （部分退款、扣手续费），「收了多少」和「退了多少」是两个独立的事实。
+      refund_amount 单独一列而不是复用 pay_amount，两者可能不等（部分退款、
+      扣手续费），「收了多少」和「退了多少」是两个独立的事实。
     -->
     <update id="markRefunded">
         UPDATE charging_order
@@ -403,13 +357,10 @@
     </update>
 
     <!--
-      ★★ **只有 1 能取消。**★★ 让 2 充电中也走这条路，等于给了一条「充完电把订单
-         作废」的路径 —— 车已经被充过、电已经用掉，而订单被抹掉。那不是取消，是偷电。
-         已经开始的充电只能「结束」（走 markEnded），用户想提前走时设备报
-         stop_reason = 1 用户主动。
+      只有 1 能取消。让 2 充电中也走这条路等于给了一条「充完电把订单作废」的路径：
+      车已经被充过、电已经用掉，而订单被抹掉。已经开始的充电只能走 markEnded 结束。
 
-      ★ 取消时**必须同时解冻**钱包里的钱，由 Service 在同一个事务里完成 ——
-        两张表的一致性由事务保证，不由某一方负责。
+      取消时必须同时解冻钱包里的钱，由 Service 在同一个事务里完成。
     -->
     <update id="markCancelled">
         UPDATE charging_order
@@ -422,17 +373,14 @@
     <!--
       任意「钱还冻着」的状态 → 9 异常挂账
 
-      ★ 用**状态集合**而不是一个固定的 from：挂账可能发生在待启动（时间戳异常）、
-        充电中（设备通信断了）、待结算（电价有缺口）、待支付（余额不够）、
-        支付失败（重试还是不够）—— 五种情况同一个出口。集合由
-        OrderStatus.holdingMoneyCodes() 给，判据是「还占着车主的钱但账没结清」。
+      用状态集合而不是一个固定的 from：挂账可能发生在待启动（时间戳异常）、充电中
+      （设备通信断了）、待结算（电价有缺口）、待支付（余额不够）、支付失败（重试
+      还是不够），五种情况同一个出口。集合由 OrderStatus.holdingMoneyCodes() 给。
 
-      ★★ 不能换成 holdingConnectorCodes()：那个集合是「还占着一把枪」，
-         只有 {1,2,3}，漏掉 4 和 6 —— 于是钱冻着、账结不掉的订单恰恰挂不上去，
-         影响 0 行然后被当作「状态已经变了」静默跳过。
+      不能换成 holdingConnectorCodes()：那个集合只有 {1,2,3}，漏掉 4 和 6，于是
+      钱冻着、账结不掉的订单恰恰挂不上去，影响 0 行然后被当成「状态已经变了」跳过。
 
-      ★ remark 是**必须的**：一笔没有原因的异常挂账单只能靠人翻日志，
-        而日志的保留期通常比订单短 —— 挂账的意义就是「把原因留在订单旁边」。
+      remark 是必须的：没有原因的挂账单只能靠人翻日志，而日志的保留期通常比订单短。
     -->
     <update id="markAbnormal">
         UPDATE charging_order

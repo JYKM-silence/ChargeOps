@@ -4,10 +4,8 @@
 <mapper namespace="com.chargeops.mapper.StationMapper">
 
     <!--
-      ★ station 没有需要隐藏的列（不像 staff 的 password），这里是全列，
-        被 getById / page / listByIds 三处 include。
-      不写 <resultMap>：map-underscore-to-camel-case=true 已经把
-      service_phone → servicePhone 这类映射做掉了。
+       station 没有需要隐藏的列（不像 staff 的 password），这里是全列，被三处 include。
+      不写 <resultMap>：map-underscore-to-camel-case=true 已经把映射做掉了。
     -->
     <sql id="Base_Column_List">
         id, code, name, operator, province, city, district, address,
@@ -33,14 +31,13 @@
     </select>
 
     <!--
-      ★ open_time / close_time 直接取 #{openTime} / #{closeTime} —— 实体里是 String，
-        MyBatis 的默认 StringTypeHandler 调 ps.setString()，MySQL 把它当字面量解析成
-        TIME。★ 这正是 '24:00:00' 能原样往返的原因：值以字符串形态一路走到驱动，
-        全程没有任何类型转换介入。如果实体用 LocalTime，这个值在 Java 侧就已经不存在了。
+       open_time / close_time 直接取 #{openTime} —— 实体里是 String，默认的
+        StringTypeHandler 调 ps.setString()，MySQL 把它当字面量解析成 TIME。这正是
+        '24:00:00' 能原样往返的原因：值以字符串形态一路走到驱动，全程没有类型转换。
+        实体换成 LocalTime 的话，这个值在 Java 侧就已经不存在了。
 
-      ★ 审计四列由 AutoFillInterceptor 填进对象，这里取属性值。
-        删掉 Mapper 上的 @AutoFill 不是静默的：全列插入时 create_time 取到 null
-        → 撞 NOT NULL 报 errno 1048，插入直接失败（真正静默的只有可空的两个 user 列）。
+       审计四列由 AutoFillInterceptor 填进对象。删掉 Mapper 上的 @AutoFill 不是静默的：
+        全列插入时 create_time 取到 null → 撞 NOT NULL 报 errno 1048。
     -->
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO station (code, name, operator, province, city, district, address,
@@ -52,12 +49,10 @@
     </insert>
 
     <!--
-      ★ status 的判断条件只能写 != null，不能写 != '' —— 拿 Integer 和空串比较
-        永远是 false，条件失效而 SQL 照常执行，是个不会报错的坑。
+       status 只能写 != null，不能写 != '' —— Integer 和空串比较恒为 false，条件失效而
+        SQL 照常执行，是个不会报错的坑。
 
-      ★ 审计两列无条件带上：没改任何业务字段的一次 update 也应该让 update_time 前进。
-
-      ★ close_time = '24:00:00' 在这里同样原样往返，理由见 insert 的注释。
+       审计两列无条件带上：没改任何业务字段的一次 update 也应该让 update_time 前进。
     -->
     <update id="update">
         UPDATE station
@@ -83,12 +78,12 @@
     </update>
 
     <!--
-      ★ ORDER BY id DESC 不是装饰，是分页正确性的前提：没有 ORDER BY 时行序未定义，
-        翻页时表现为「第 1 页的第 7 条在第 2 页又出现了一次」，而且只在数据量变大、
-        执行计划变化之后才出现。用 id DESC 而不是 name：后者不唯一，排序仍不稳定。
+       ORDER BY id DESC 不是装饰，是分页正确性的前提：没有 ORDER BY 时行序未定义，
+       翻页时表现为「第 1 页的第 7 条在第 2 页又出现了一次」。用 id 而不是 name：
+       后者不唯一，排序仍不稳定。
 
-      ★ 不加分号或注释块 —— PageHelper 会在这条 SQL 外面套 SELECT COUNT(*) 和
-        LIMIT，多余的分号会让拼接出来的语句变成语法错误。
+       不加分号 —— PageHelper 会在这条 SQL 外面套 SELECT COUNT(*) 和 LIMIT，多余的
+       分号会让拼接出来的语句变成语法错误。
     -->
     <select id="page" resultType="com.chargeops.entity.Station">
         SELECT
@@ -98,15 +93,12 @@
             <if test="name != null and name != ''">
                 AND name LIKE CONCAT('%', #{name}, '%')
             </if>
-            <!-- ★ code 是<b>前缀</b>匹配，和 name 不同：站点编码形如 ST-440300-0001，
-                 运维从左往右敲，两侧 % 会让 uk_station_code 完全用不上。
-                 注意：前缀匹配也不等于能用上索引，只有 <b>大小写敏感 + 无前导通配符</b>
-                 时才可能，这里至少满足了后半条 -->
+            <!--  code 用前缀匹配：站点编码形如 ST-440300-0001，两侧 % 会让
+                  uk_station_code 完全用不上 -->
             <if test="code != null and code != ''">
                 AND code LIKE CONCAT(#{code}, '%')
             </if>
-            <!-- city 走 idx_station_city_status，必须精确匹配才能用上 ——
-                 写成 LIKE 会让索引失效，而这一条恰恰是最该走索引的过滤条件 -->
+            <!-- city 走 idx_station_city_status，写成 LIKE 会让索引失效 -->
             <if test="city != null and city != ''">
                 AND city = #{city}
             </if>
@@ -118,21 +110,14 @@
     </select>
 
     <!--
-      ★★ 车主端分页：status = 1 是**写死**的，不是 <if>。★★
+       车主端分页：status = 1 是写死的，不是 <if>。这是它和上面 page 的唯一区别，
+       也是它单独存在的理由 —— 「车主端只看得见启用中的站」是结构性规则，不能写成
+       Service 里的一行 setStatus(1)：那行赋值漏掉一次，停用中的站点就会出现在车主端，
+       而且不报错。status = 2（维护中）同样不返回。
 
-        这是本查询和上面 page 的唯一区别，也是它单独存在的全部理由：
-        「车主端只看得见启用中的站」是一条**结构性**规则，不能是
-        Service 里的一行 setStatus(1) —— 那行赋值漏掉一次，
-        停用中的站点就会出现在车主端，而且不会报错。
+       status = 1 写在 <where> 外面，和 <if> 平级：它是无条件条件。
 
-        ★ status = 2（维护中）同样不返回：对车主就是「现在别来」，
-          展示出来只会让人白跑一趟。
-
-      ★ 注意 status = 1 写在 <where> 外面，和 <if> 平级 ——
-        它是无条件条件，放进 <where> 里只会让人以为它可能是可选的。
-        <where> 标签只负责处理它后面那些**可选**条件的 AND 前缀。
-
-      ★ ORDER BY id DESC 是分页正确性的前提，理由见上面 page 的注释。
+       ORDER BY id DESC 是分页正确性的前提，理由见上面 page 的注释。
     -->
     <select id="pageForMember" resultType="com.chargeops.entity.Station">
         SELECT
@@ -142,7 +127,7 @@
         <if test="name != null and name != ''">
             AND name LIKE CONCAT('%', #{name}, '%')
         </if>
-        <!-- city 走 idx_station_city_status，必须精确匹配才用得上索引 -->
+        <!-- city 走 idx_station_city_status，必须精确匹配 -->
         <if test="city != null and city != ''">
             AND city = #{city}
         </if>

@@ -7,22 +7,15 @@ import com.chargeops.vo.StaffVO;
 /**
  * 运维人员服务
  *
- * <p><b>接口里不出现任何 MyBatis / Servlet / Spring Web 的类型</b> ——
- * 没有 {@code Staff} 实体（那是持久化层的形状）、没有 {@code HttpServletRequest}。
- * 入参出参都是自己定义的类型，这是「Controller 只做协议转换、
- * Service 只做业务」这条分层规则的落点。
- *
- * <p>好处在测试时最明显：测试 {@code login} 不需要启动 Spring、不需要造一个
- * HTTP 请求，直接 {@code new StaffServiceImpl(mockMapper, ...)} 然后断言抛的是不是
- * {@code PasswordErrorException} 就行。方法签名里一旦出现 Servlet 类型就做不到了。
+ * <p>接口里不出现任何 MyBatis / Servlet / Spring Web 的类型：没有 {@code Staff} 实体、
+ * 没有 {@code HttpServletRequest}，入参出参都是自己定义的类型。方法签名里一旦出现
+ * Servlet 类型，测试 {@code login} 就必须启动 Spring、造一个 HTTP 请求。
  */
 public interface StaffService {
 
     /**
      * 管理端登录
      *
-     * @param staffLoginDTO 账号密码
-     * @return 登录信息 + token
      * @throws com.chargeops.exception.AccountNotFoundException 账号不存在
      * @throws com.chargeops.exception.AccountLockedException   账号被禁用
      * @throws com.chargeops.exception.PasswordErrorException   密码错误
@@ -32,15 +25,9 @@ public interface StaffService {
     /**
      * 查询当前登录者自己的信息
      *
-     * <p><b>★ 注意这个方法<b>没有</b> id 参数。</b>
-     * 这不是省事，是一条安全约定：当前登录者是谁只能从
-     * {@code BaseContext}（拦截器从 token 解出来的）读，
-     * 永远不能由调用方指定。
-     *
-     * <p>形状上写成 {@code getById(Long id)} 也能实现同样的功能，
-     * 但那样接口就变成了「查任意一个人」—— 攻击者把路径里的 id 一改
-     * 就能看别人的资料。而「只有自己能查自己」这件事，
-     * 在方法签名里表达出来比在注释里写一句「注意只能传自己的 id」可靠得多。
+     * <p> 这个方法没有 id 参数：当前登录者是谁只能从 {@code BaseContext} 读，
+     * 永远不能由调用方指定。写成 {@code getById(Long id)} 也能实现同样的功能，
+     * 但那样接口就变成了「查任意一个人」—— 攻击者把路径里的 id 一改就能看别人的资料。
      */
     StaffVO getCurrentStaff();
 }

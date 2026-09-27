@@ -12,13 +12,13 @@ import java.util.Map;
 /**
  * JWT 签发与校验工具（jjwt 0.12.x 的 API）
  *
- * <p><b>★ 最容易炸的一点：密钥长度。</b>{@link Keys#hmacShaKeyFor} 要求 HS256 的密钥
+ * <p> 最容易炸的一点：密钥长度。{@link Keys#hmacShaKeyFor} 要求 HS256 的密钥
  * 至少 32 字节，不够就抛 {@code WeakKeyException}。演示用的默认密钥往往只有 6~7 个字符，
- * 直接沿用必然启动即炸 —— 而且报的是 <b>500 不是 401</b>，因为异常抛在签发 token 的时候，
+ * 直接沿用必然启动即炸 —— 而且报的是 500 不是 401，因为异常抛在签发 token 的时候，
  * 跟鉴权拦截器毫无关系，看到 500 就去看拦截器是很自然的误判方向。
  * 所以 {@link #hmacKey} 宁可自己显式校验一遍，把「哪个配置项有问题」写进异常消息。
  *
- * <p><b>为什么参数是 String 而不是 SecretKey：</b>密钥来自配置
+ * <p>为什么参数是 String 而不是 SecretKey：密钥来自配置
  * （{@code chargeops.jwt.*-secret-key}），本质是字符串。让调用方传 SecretKey 的话，
  * 「字符串怎么变成 SecretKey」就散落到各个调用点，每处可能用不同编码，
  * 结果是「同一个密钥签出来的 token 校验不过」这种最难查的问题。转换只在这里做一次。
@@ -41,9 +41,9 @@ public class JwtUtil {
         long now = System.currentTimeMillis();
 
         return Jwts.builder()
-                // ★ 顺序有意义：先放自定义 claims，再设标准字段。反过来的话，
-                //   自定义 claims 里恰好有个叫 "exp" 的键就会把刚设好的过期时间覆盖掉 ——
-                //   这个 token 会「永远有效」，且表面上完全正常（能签发、能校验、能用）。
+                // 顺序有意义：先放自定义 claims，再设标准字段。反过来的话，
+                // 自定义 claims 里恰好有个叫 "exp" 的键就会把刚设好的过期时间覆盖掉 ——
+                // 这个 token 会「永远有效」，且表面上完全正常（能签发、能校验、能用）。
                 .claims(claims)
                 .issuedAt(new Date(now))
                 .expiration(new Date(now + ttlMillis))
@@ -74,8 +74,8 @@ public class JwtUtil {
     /**
      * 把配置里的字符串密钥转成 {@link SecretKey}，并给出明确的长度校验
      *
-     * <p><b>★ 为什么 jjwt 已经会校验了还要自己判一次：</b>它的
-     * {@code WeakKeyException} 只说「密钥不够长」，<b>不说这个密钥是从哪个配置项读来的</b>。
+     * <p> 为什么 jjwt 已经会校验了还要自己判一次：它的
+     * {@code WeakKeyException} 只说「密钥不够长」，不说这个密钥是从哪个配置项读来的。
      * 本项目的 JWT 密钥有四个来源（管理端/车主端各一套，每套还能被环境变量覆盖），
      * 看到「48 bits」之后还得去翻配置找是哪一条 —— 这里补一句带上下文的消息省掉这一步。
      */

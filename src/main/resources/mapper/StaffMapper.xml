@@ -4,14 +4,11 @@
 <mapper namespace="com.chargeops.mapper.StaffMapper">
 
     <!--
-      ★ 这份 XML 里最要紧的一个决定：<sql id="Base_Column_List"> 里没有 password。
+      Base_Column_List 里没有 password。登录用的 getByUsername 写在接口的 @Select 上
+      （唯一需要密码的那条路径），所以这里少一列不影响登录。
 
-      它被 getById / insert 的返回 / update 共用；登录用的 getByUsername 写在接口的
-      @Select 上（唯一需要密码的那条路径），所以这条清单少一列不会影响登录。
-
-      效果：只要走 XML 这条路，返回的 Staff 对象里 password 恒为 null ——
-      就算哪天有人写错了把一个实体直接返回给前端，泄露出去的也只是一个 null 字段。
-      —— 安全措施最好是「默认就安全」，而不是「靠自己记得」。
+      效果：只要走 XML 这条路，返回的 Staff 里 password 恒为 null —— 就算哪天有人把
+      实体直接返回给前端，泄露出去的也只是一个 null 字段。
     -->
 
     <sql id="Base_Column_List">
@@ -20,11 +17,8 @@
     </sql>
 
     <!--
-      不需要 <resultMap>：map-underscore-to-camel-case=true 已经把
-      station_id → stationId 这类映射做掉了（它只处理「下划线 → 驼峰」这一种差异）。
-
-      ★ 不预写 resultMap：它是一份要跟着表结构同步维护的清单，没有实际需要时
-        写它只是多一个会和 DDL 不一致的地方。
+      不写 <resultMap>：map-underscore-to-camel-case=true 已经把 station_id → stationId
+      这类映射做掉了。
     -->
 
     <select id="getById" resultType="com.chargeops.entity.Staff">
@@ -35,12 +29,11 @@
     </select>
 
     <!--
-      ★ 审计四列不在这里写取值逻辑，由 AutoFillInterceptor 在方法执行前填进对象 ——
-        所以下面直接取 #{createTime} 这样的属性值。
+       审计四列由 AutoFillInterceptor 在方法执行前填进对象，所以下面直接取
+       #{createTime} 这样的属性值。
 
-      ★★ 接口上的 @AutoFill 不能删：删了这里全部取到 null，而这是全列插入 ——
-         DDL 的 DEFAULT 只在列没出现在语句里时才生效，所以 create_time / update_time
-         会撞 NOT NULL 报 errno 1048，插入直接失败。
+       接口上的 @AutoFill 不能删：删了这里全部取到 null，而这是全列插入，
+       create_time / update_time 会撞 NOT NULL 报 errno 1048，插入直接失败。
       -->
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO staff (username, password, name, phone, sex, id_number, role, station_id, status,
@@ -51,11 +44,11 @@
     </insert>
 
     <!--
-      ★ 为什么必须用 <set> + <if> 而不是把整行都 update 一遍：后者会把实体里没设置的
-        字段写成 null —— 前端只想改手机号时，name 会被清掉。
+       必须用 <set> + <if>，不能把整行都 update 一遍：后者会把实体里没设置的字段写成
+       null —— 前端只想改手机号时，name 会被清掉。
 
-      ★ status 是 0/1，判断条件只能是 != null，不能写 != ''（Integer 和空串比较
-        恒为 false，条件失效而 SQL 照常执行，是个隐蔽的坑）。
+       status 是 0/1，判断条件只能是 != null，不能写 != ''（Integer 和空串比较恒为
+       false，条件失效而 SQL 照常执行）。
       -->
     <update id="update">
         UPDATE staff
@@ -69,7 +62,7 @@
             <if test="role != null">role = #{role},</if>
             <if test="stationId != null">station_id = #{stationId},</if>
             <if test="status != null">status = #{status},</if>
-            <!-- 审计两列由 AutoFillInterceptor 填，一定非 null，所以无条件带上 -->
+            <!-- 审计两列由 AutoFillInterceptor 填，一定非 null -->
             update_time = #{updateTime},
             update_user = #{updateUser}
         </set>

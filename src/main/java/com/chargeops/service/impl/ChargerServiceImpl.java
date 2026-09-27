@@ -37,9 +37,8 @@ import java.util.stream.Collectors;
 /**
  * 充电桩服务实现
  *
- * <p>比 {@code StationServiceImpl} 多两件事：<b>它依赖别人（站点）</b>，
- * 而且<b>它的列表需要富化</b>。这两件事都不是这个类独有的 ——
- * 后面的枪、套餐、模板都会遇到，所以它们的写法在这里定型。
+ * <p>比 {@code StationServiceImpl} 多两件事：它依赖别人（站点），而且它的列表
+ * 需要富化 —— 后面的枪、套餐、模板都按这里的写法走。
  */
 @Service
 @Slf4j
@@ -50,39 +49,29 @@ public class ChargerServiceImpl implements ChargerService {
     private final StationMapper stationMapper;
     private final ConnectorMapper connectorMapper;
 
-    /**
-     * ★ 只被 {@link #assertDeletable} 用，只读一个 COUNT。
-     * 跨到订单表上看着越界，但「这根桩能不能删」的答案确实不在桩表里 ——
-     * 在引用它的那些订单行里。理由和 {@code StationServiceImpl} 里同名字段一样。
-     */
+    /** 只被 {@link #assertDeletable} 用，只读一个 COUNT：「这根桩能不能删」的答案不在桩表里，在引用它的那些订单行里 */
     private final ChargingOrderMapper orderMapper;
 
     @Override
     @Transactional
     public Long create(ChargerDTO chargerDTO) {
-        // ★ 先确认站点存在。这不是「为了保住完整性」—— MySQL 的外键在本项目里
-        //   是关掉的 —— 而是为了给出一句【能解释的消息】。
-        //   不查的话，一个建在不存在的站点下的桩会被安静地插进去，然后永远不出现
-        //   在任何按站点过滤的列表里，管理员看到的是一句「创建成功」和一块空白列表。
+        // 先确认站点存在，不是为了保住完整性（外键在本项目里是关掉的），
+        // 而是为了给出一句能解释的消息：不查的话，一个建在不存在的站点下的桩
+        // 会被安静地插进去，然后永远不出现在任何按站点过滤的列表里。
         requireStation(chargerDTO.getStationId());
 
         Charger charger = new Charger();
         BeanUtils.copyProperties(chargerDTO, charger);
 
-        // ★★ 两个字段必须在这里显式给值，因为 DDL 的 DEFAULT 救不了它们：
-        //   insert 是全列插入，而 SQL 的 DEFAULT 只在列【没有出现在语句里】时
-        //   生效 —— 传 null 就是往 NOT NULL 列里显式写 NULL，报 errno 1048。
-        //   这个坑在本项目里连踩三次，这是第三次。
+        // 两个字段必须在这里显式给值：insert 是全列插入，而 SQL 的 DEFAULT 只在列
+        // 没有出现在语句里时生效 —— 传 null 就是往 NOT NULL 列里显式写 NULL。
 
-        // gun_count：★ 给 0，【不是】DDL 默认的 1。这一列的事实来源是 connector
-        //   表（DDL 明写「冗余自 connector」），而刚建好的桩一把枪都没有。
-        //   默认值 1 是给「一桩一枪」省事的近似，代价是列表页会显示一个不存在的枪
-        //   直到有人加枪或数枪才发现 —— 「近似但错的值」不如「暂时不完整但正确」。
+        // gun_count 给 0，不是DDL 默认的 1。这一列的事实来源是 connector 表
+        // （DDL 明写「冗余自 connector」），而刚建好的桩一把枪都没有。
         charger.setGunCount(0);
 
-        // status：新建的桩只能是 0 离线 —— 它还没和任何硬件建立过连接，说它
-        //   「在线空闲」需要一个从未发生过的握手。之后由心跳上报，或者管理员在
-        //   更新接口上手工设成故障/维护中，所以 ChargerDTO 里根本没有这个字段。
+        // status 只能是 0 离线：它还没和任何硬件建立过连接，说它「在线空闲」
+        // 需要一个从未发生过的握手。所以 ChargerDTO 里根本没有这个字段。
         charger.setStatus(ChargerStatus.OFFLINE.getCode());
 
         chargerMapper.insert(charger);
@@ -96,11 +85,9 @@ public class ChargerServiceImpl implements ChargerService {
     @Transactional
     public void update(Long id, ChargerUpdateDTO chargerUpdateDTO) {
         Charger charger = new Charger();
-        // ★ 注意这里 copy 的是 ChargerUpdateDTO —— 它没有 stationId、
-        //   没有 gunCount、没有 lastHeartbeatTime。
-        //   所以哪怕 ChargerMapper.xml 的 <set> 里哪天多了一行
-        //   station_id = #{stationId}，复制出来的对象上那个字段也是 null，
-        //   <if> 会跳过它。<b>两层独立生效。</b>
+        // 这里 copy 的是 ChargerUpdateDTO —— 它没有 stationId、没有 gunCount、
+        // 没有 lastHeartbeatTime：哪怕 ChargerMapper.xml 的 <set> 里哪天多了一行
+        // station_id = #{stationId}，复制出来的对象上那个字段也是 null，<if> 会跳过它。
         BeanUtils.copyProperties(chargerUpdateDTO, charger);
         charger.setId(id);
 
@@ -121,35 +108,31 @@ public class ChargerServiceImpl implements ChargerService {
     @Override
     public ChargerVO getById(Long id) {
         Charger charger = requireCharger(id);
-        // ★ 详情也要补站名：前端拿到一个 ChargerVO 时，不应该需要根据「这是从
-        //   列表来的还是从详情来的」来决定 stationName 有没有值。
+        // 详情也要补站名：前端拿到一个 ChargerVO 时，不应该需要根据「这是从列表来的
+        // 还是从详情来的」来决定 stationName 有没有值。
         return toVos(List.of(charger)).get(0);
     }
 
     @Override
     public PageResult page(ChargerPageQueryDTO query) {
-        // ★★ 顺序就是一切，见下面两段注释。
+        // 顺序就是一切，见下面那段注释。
         PageHelper.startPage(query.getPageNum(), query.getPageSize());
         List<Charger> rows = chargerMapper.page(query);
         long total = ((Page<Charger>) rows).getTotal();
 
-        // ★★ 富化【必须】在第 1 条查询之后。
-        //
-        //   PageHelper.startPage 把分页参数放进一个 ThreadLocal，由【该线程上的
-        //   下一条 MyBatis 查询】消费掉。如果 toVos 被挪到 chargerMapper.page
-        //   之前（或被内联进 page 查询和 getTotal 之间），那么【它会拿到 LIMIT 10】：
-        //   stationMapper.listByIds 只返回前 10 个站点，第 11 个之后的站点查不到
-        //   名字，而 chargerMapper.page 退化成全表扫描。
-        //
-        //   表现有多难查：第 1 页看起来完全正常（页大小就是 10）、站点数不超过
-        //   10 个时永远不出现、一旦出现看起来像前端的问题（后端确实返回了
-        //   stationName 这个键，只是值是 null）—— 静默、依赖数据量、且指向错误的方向。
+        // 富化必须在第 1 条查询之后：startPage 把分页参数放进 ThreadLocal，
+        // 由该线程上的下一条 MyBatis 查询消费掉。把 toVos 挪到 chargerMapper.page
+        // 之前的话，listByIds 会拿到 LIMIT 10 —— 第 11 个之后的站点查不到名字，
+        // 而 chargerMapper.page 退化成全表扫描。
+        // 表现有多难查：第 1 页看起来完全正常（页大小就是 10）、站点数不超过 10 个时
+        // 永远不出现、一旦出现看起来像前端的问题（后端确实返回了 stationName，
+        // 只是值是 null）。
         List<ChargerVO> records = toVos(rows);
 
         return new PageResult(total, records);
     }
 
-    // ==================== 私有：校验与转换 ====================
+    // ---------- 私有：校验与转换 ----------
 
     private Station requireStation(Long stationId) {
         Station station = stationMapper.getById(stationId);
@@ -170,45 +153,18 @@ public class ChargerServiceImpl implements ChargerService {
     /**
      * 删除守卫：桩下还有枪、或者还有未完结的订单时，不许删
      *
-     * <p>★ 和站点那条守卫是同一个判断的另一半，但后果更隐蔽：桩被删掉之后，
-     * 它的枪<b>不会被级联删除</b>（没有外键），于是那些枪会带着一个指向不存在桩的
-     * {@code charger_id} 留在库里 —— 仍然能被查出来，但再也找不到自己属于哪个桩，
-     * 而 {@code gun_count} 的冗余对账也再没有依据。
+     * <p> 桩被删掉之后，它的枪不会被级联删除（没有外键），那些枪会带着一个指向
+     * 不存在桩的 {@code charger_id} 留在库里 —— 仍然能被查出来，但再也找不到
+     * 自己属于哪个桩，而 {@code gun_count} 的冗余对账也再没有依据。
      *
-     * <p>消息里带上具体数量，理由同 {@code StationServiceImpl.assertDeletable}。
+     * <p> 第二道（订单）不能省：第一道挡不住「桩上的枪已经被全部删掉，但订单还在」，
+     * 那笔订单的 {@code charger_id} 会指向一根不存在的桩，而订单是 append-only 的，
+     * 悬空引用永久留在历史里。判据是 {@code OrderStatus.blockingCodes()}
+     * （「钱还冻着」∪「挂账等人工」，不是「非终态」）—— 让已支付的历史订单也挡住
+     * 删除的话，任何出过工单的桩都会变成不可删。
      *
-     * <h3>★ 第二道守卫为什么不能省</h3>
-     *
-     * <p>第一道（查枪）挡不住这种情况：<b>桩上的枪已经被全部删掉，但订单还在</b>。
-     * 枪可以删（只要自己不带订单），桩却不行 —— 那笔订单的 {@code charger_id}
-     * 会指向一根不存在的桩，而订单是 append-only 的，悬空引用永久留在历史里。
-     *
-     * <p>★ 判据同样是 {@code OrderStatus.blockingCodes()}
-     * （「钱还冻着」∪「挂账等人工」，<b>不是</b>「非终态」），
-     * <b>不是「有没有订单」</b>：理由见 {@code OrderStatus.blocksDeviceDeletion} ——
-     * 让已支付的历史订单也挡住删除，任何出过工单的桩都会变成不可删。
-     *
-     * <h3>★ 这一道和站点那一道查的是同一批订单，但仍然不能省</h3>
-     *
-     * <p><b>先说清它们的关系，免得后来的人以为有一处是冗余删掉：</b>
-     * 一笔订单同时带 {@code station_id} 和 {@code charger_id}，所以
-     * 「站下有没有未完结订单」和「桩下有没有未完结订单」在正常数据上是
-     * <b>同一个问题从两个方向问</b>。而且删站的路径上，第一道守卫会要求
-     * 先把桩全部删掉 —— 每根桩又都要先过本方法，于是走到删站时，
-     * 站下的订单守卫<b>实际上已经被查过一遍了</b>。
-     *
-     * <p>★ 但两道都要留，理由是<b>两个入口各自独立</b>：
-     * {@code DELETE /api/admin/charger/{id}} 这条路径<b>完全不经过</b>
-     * {@code StationService}，管理员在桩列表页就能直接删一根桩 ——
-     * 那根桩上的订单守卫只能由本方法回答。
-     *
-     * <p>★★ <b>并且要诚实地说：站点那一侧的第二道守卫，在正常数据上基本是
-     * 一个兜底网而非常规路径。</b>它只在这些情况下才会命中 ——
-     * <b>桩已经被删光、但订单还指着这个站</b>。那意味着数据发生了漂移，
-     * 最可能的来源是<b>本守卫上线之前就已经被删掉的桩</b>（历史数据），
-     * 或者有人直接改了库。它拦的是这类数据，不是日常操作 ——
-     * 所以就别奇怪它在测试里很难构造出「只有它命中」的场景：
-     * 那正是它工作正常的表现。
+     * <p> 两道守卫都要留，因为两个入口各自独立：{@code DELETE /api/admin/charger/{id}}
+     * 这条路径完全不经过 {@code StationService}，那根桩上的订单守卫只能由本方法回答。
      */
     private void assertDeletable(Long id) {
         int connectorCount = connectorMapper.countByChargerId(id);
@@ -227,28 +183,25 @@ public class ChargerServiceImpl implements ChargerService {
     /**
      * 批量转 VO，并补齐 {@code stationName}
      *
-     * <p>★ 批量而不是逐个查，是为了消除 N+1：一页 10 个桩逐个
-     * {@code stationMapper.getById} 就是 10 次查询，而 {@code listByIds} 只要 1 次。
-     * 这个差别在数据量小的时候看不出来，但它是<b>形状</b>上的，改起来要动整个方法。
+     * <p> 批量而不是逐个查，是为了消除 N+1：一页 10 个桩逐个 {@code getById}
+     * 就是 10 次查询，而 {@code listByIds} 只要 1 次。
      *
-     * <p>★ <b>{@code listByIds} 不能传空集合</b>：{@code <foreach>} 会展开成
-     * {@code IN ()}，那是 SQL 语法错误（不是返回空列表），而空集合在业务上很常见
-     * —— 第一页恰好没有数据的时候。所以下面那个 {@code if} 是必经的一步。
+     * <p> {@code listByIds} 不能传空集合：{@code <foreach>} 会展开成 {@code IN ()}，
+     * 那是 SQL 语法错误（不是返回空列表），而第一页恰好没有数据的时候很常见。
      */
     private List<ChargerVO> toVos(List<Charger> chargers) {
         if (chargers.isEmpty()) {
             return List.of();
         }
 
-        // ★ 去重：一页 10 个桩很可能只属于 2 个站点，不去重会让 IN 列表白白变长。
+        // 去重：一页 10 个桩很可能只属于 2 个站点，不去重会让 IN 列表白白变长。
         Set<Long> stationIds = chargers.stream()
                 .map(Charger::getStationId)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
 
-        // ★ 站点查不到时（被并发删掉了）不报错，只是名字为 null ——
-        //   只读路径上的派生字段失败要降级，「这一行的站名显示不出来」
-        //   不该让整个列表接口 500。同 StationServiceImpl.labelOf。
+        // 站点查不到时（被并发删掉了）不报错，只是名字为 null：只读路径上的派生字段
+        // 失败要降级，「这一行的站名显示不出来」不该让整个列表接口 500。
         Map<Long, String> stationNames = stationIds.isEmpty()
                 ? Map.of()
                 : stationMapper.listByIds(List.copyOf(stationIds)).stream()
@@ -268,10 +221,7 @@ public class ChargerServiceImpl implements ChargerService {
         return vo;
     }
 
-    /**
-     * ★ 派生字段的降级策略见 {@code StationServiceImpl.labelOf} ——
-     * 只读路径上的派生字段失败返回 null，不抛。
-     */
+    /** 派生字段的降级策略见 {@code StationServiceImpl.labelOf} —— 只读路径上失败返回 null，不抛 */
     private String labelOfType(Integer type) {
         if (type == null) {
             return null;

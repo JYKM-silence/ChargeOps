@@ -17,12 +17,12 @@ import java.util.List;
 /**
  * 订单详情
  *
- * <p>★ 金额三兄弟在这里必须<b>同时</b>出现，含义：{@code totalAmount} 应付 = Σ分段金额
+ * <p> 金额三兄弟在这里必须同时出现，含义：{@code totalAmount} 应付 = Σ分段金额
  * （一分不多一分不少）、{@code discountAmount} 权益抵扣、{@code payAmount} 实付 =
  * 应付 − 抵扣（用户实际被扣的钱）。只给 {@code payAmount} 的话，用了权益的用户会算不清
  * 「我明明充了 30 度，为什么只扣了 12 块」—— 那看起来像系统算错了，而不是权益生效了。
  *
- * <p>★ {@code segments} 和 {@code events} 都带在这里，因为它们合起来才是
+ * <p> {@code segments} 和 {@code events} 都带在这里，因为它们合起来才是
  * 「这一笔是怎么走到今天的」的完整答案。分成两个接口的话，用户看到金额不对时
  * 要点两次，而且两次之间数据可能已经变了。
  */
@@ -42,7 +42,7 @@ public class ChargingOrderDetailVO implements Serializable {
 
     private String statusLabel;
 
-    // ==================== 位置与车辆（全部是快照） ====================
+    // ---------- 位置与车辆（全部是快照） ----------
 
     private Long stationId;
 
@@ -50,10 +50,10 @@ public class ChargingOrderDetailVO implements Serializable {
 
     private Long connectorId;
 
-    /** ★ 车牌快照，不是当前车牌 */
+    /**  车牌快照，不是当前车牌 */
     private String plateNo;
 
-    // ==================== 时间 ====================
+    // ---------- 时间 ----------
 
     private LocalDateTime createTime;
 
@@ -63,7 +63,7 @@ public class ChargingOrderDetailVO implements Serializable {
 
     private Integer durationSeconds;
 
-    // ==================== 电量 ====================
+    // ---------- 电量 ----------
 
     private BigDecimal startMeterKwh;
 
@@ -75,7 +75,7 @@ public class ChargingOrderDetailVO implements Serializable {
 
     private Integer endSoc;
 
-    // ==================== 金额（三兄弟，见类注释） ====================
+    // ---------- 金额（三兄弟，见类注释） ----------
 
     private BigDecimal energyFee;
 
@@ -87,7 +87,7 @@ public class ChargingOrderDetailVO implements Serializable {
 
     private BigDecimal payAmount;
 
-    // ==================== 支付 ====================
+    // ---------- 支付 ----------
 
     private Integer payMethod;
 
@@ -99,7 +99,7 @@ public class ChargingOrderDetailVO implements Serializable {
 
     private BigDecimal refundAmount;
 
-    // ==================== 结束原因 ====================
+    // ---------- 结束原因 ----------
 
     private Integer stopReason;
 
@@ -107,7 +107,7 @@ public class ChargingOrderDetailVO implements Serializable {
 
     private LocalDateTime settleTime;
 
-    // ==================== 明细与历史 ====================
+    // ---------- 明细与历史 ----------
 
     private List<ChargingSegmentVO> segments;
 

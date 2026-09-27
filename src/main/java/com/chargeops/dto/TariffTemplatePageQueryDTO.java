@@ -12,9 +12,9 @@ import java.io.Serializable;
  *
  * <p>分页参数的约定见 {@link StationPageQueryDTO} 的类注释。
  *
- * <h2>为什么没有 {@code tariff_rule} 的分页查询 DTO</h2>
+ * 为什么没有 {@code tariff_rule} 的分页查询 DTO
  *
- * <p>规则<b>永远按 {@code templateId} 全量列出</b>，不分页 —— 一个模板的时段就是
+ * <p>规则永远按 {@code templateId} 全量列出，不分页 —— 一个模板的时段就是
  * 8 行左右，分页只会让「校验 24 小时覆盖」这件必须看全集的事变得没法做。
  * 同理 {@code station_tariff} 也是按站点全量列出（一个站几条到十几条）。
  */
@@ -36,11 +36,11 @@ public class TariffTemplatePageQueryDTO implements Serializable {
     @Schema(description = "模板名称（模糊）", example = "深圳")
     private String name;
 
-    /** ★ 前缀匹配：运维更常按编码找 */
+    /**  前缀匹配：运维更常按编码找 */
     @Schema(description = "模板编码（前缀匹配）", example = "SZ-2026")
     private String code;
 
-    /** ★ 走 {@code idx_tariff_template_region_status} */
+    /**  走 {@code idx_tariff_template_region_status} */
     @Schema(description = "适用地区（精确）", example = "深圳市")
     private String region;
 

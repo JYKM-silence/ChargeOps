@@ -11,7 +11,7 @@ import java.nio.file.Paths;
  * 本地磁盘存储：把上传的文件写到服务器本地目录，
  * 通过 Spring MVC 的静态资源映射对外提供访问
  *
- * <p><b>★ 只用于本地开发和演示</b>（零成本、零依赖、断网也能跑）。生产环境不能这么干：
+ * <p> 只用于本地开发和演示（零成本、零依赖、断网也能跑）。生产环境不能这么干：
  * 多实例部署时图片只传到 A 机，请求被负载均衡转到 B 机就是 404；文件还会和发布绑死
  * （重建容器就没了），也没有 CDN 扛流量。这个类的定位是「开发环境的默认实现」，
  * 不是「对象存储的替代品」。
@@ -37,7 +37,7 @@ public class LocalFileStorage implements FileStorage {
     /**
      * 把相对路径锚定到项目根目录，而不是 JVM 的工作目录
      *
-     * <p><b>★ 为什么需要这一步 —— 实测踩出来的：</b>配置里写的是 {@code ./data/upload}，
+     * <p> 为什么需要这一步 —— 实测踩出来的：配置里写的是 {@code ./data/upload}，
      * 而相对路径按「进程的工作目录」解析，那个目录取决于怎么启动：
      * VS Code 点 Run → 工作区根目录，{@code mvn spring-boot:run} → 项目根目录，
      * {@code java -jar} → 敲命令时所在的任意目录。同一个配置指向不同的地方，
@@ -82,8 +82,8 @@ public class LocalFileStorage implements FileStorage {
         Path target = root.resolve(objectName).normalize();
 
         // 防目录穿越（传 ../../../../etc/passwd 这种名字把文件写到目录外面）。
-        // ★ 校验必须写在实现这一层：现在 objectName 由调用方用 UUID 生成、天生安全，
-        //   但哪天多一个调用方（比如把它暴露成用户可控的参数）就会漏掉，守在这里谁都绕不过去。
+        // 校验必须写在实现这一层：现在 objectName 由调用方用 UUID 生成、天生安全，
+        // 但哪天多一个调用方（比如把它暴露成用户可控的参数）就会漏掉，守在这里谁都绕不过去。
         if (!target.startsWith(root)) {
             throw new IllegalArgumentException("非法的文件名：" + objectName);
         }
@@ -131,7 +131,7 @@ public class LocalFileStorage implements FileStorage {
     /**
      * 解析后的真实存储目录
      *
-     * <p>WebMvcConfiguration 注册静态资源映射时来问它，而<b>不是</b>自己再用
+     * <p>WebMvcConfiguration 注册静态资源映射时来问它，而不是自己再用
      * {@code Paths.get(localDir).toAbsolutePath()} 算一遍 —— 那样会用到 JVM 工作目录，
      * 和这里锚定的项目根目录不一致，变成「文件存一个地方、映射指向另一个地方」，
      * 表现是上传成功但立刻 404（这个 bug 实测踩到过）。只保留一个事实来源。

@@ -10,21 +10,21 @@ import java.io.Serializable;
 /**
  * 站点分页查询条件
  *
- * <h2>★ 所有字段都是可选的，包括分页参数本身</h2>
+ * 所有字段都是可选的，包括分页参数本身
  *
  * <p>这不是「没想好」，是刻意的：{@code GET /api/admin/station/page} 不带任何参数
  * 就应该返回第一页 10 条。要求调用方必须传 {@code pageNum} 只是把「默认值」
  * 这件事推给了每一个前端的每一个列表页。
  *
- * <h2>★ {@code pageNum} / {@code pageSize} 的默认值写在<b>字段初始值</b>里</h2>
+ * {@code pageNum} / {@code pageSize} 的默认值写在字段初始值里
  *
  * <p>Spring 的参数绑定先用无参构造器创建对象（字段初始值生效），再把请求里
- * <b>实际存在</b>的参数覆盖上去，所以「不传 pageNum」拿到的是 1 而不是 null。
+ * 实际存在的参数覆盖上去，所以「不传 pageNum」拿到的是 1 而不是 null。
  * 换个写法（在 Service 里 {@code q.getPageNum() == null ? 1 : ...}）也能跑，
  * 但那意味着每一个用到这个 DTO 的地方都要记得判一次空，
  * 漏掉一处就是一次 NPE 或者一次 {@code LIMIT null}。
  *
- * <h2>★ {@code pageSize} 必须有上限</h2>
+ * {@code pageSize} 必须有上限
  *
  * <p>{@code @Max(100)}。少了它，{@code ?pageSize=1000000} 就是一行 DoS ——
  * 一个不需要任何认证之外的技巧就能打垮服务的方式：它会让 MySQL 扫出全表、
@@ -36,7 +36,7 @@ import java.io.Serializable;
  * 代价是「导出全部」这类需求需要单独做接口 —— 那本来就该单独做，
  * 因为它的性能特征和列表页完全不同。
  *
- * <p><b>过滤字段是「精确匹配」还是「模糊匹配」由 Mapper 的 XML 决定</b>，
+ * <p>过滤字段是「精确匹配」还是「模糊匹配」由 Mapper 的 XML 决定，
  * 这里不表达。
  */
 @Data
@@ -57,11 +57,11 @@ public class StationPageQueryDTO implements Serializable {
     @Schema(description = "站点名称（模糊）", example = "科技园")
     private String name;
 
-    /** ★ 前缀匹配：运维常按编码前缀找 */
+    /**  前缀匹配：运维常按编码前缀找 */
     @Schema(description = "站点编码（前缀匹配）", example = "ST-440300")
     private String code;
 
-    /** ★ 走索引 {@code idx_station_city_status} */
+    /**  走索引 {@code idx_station_city_status} */
     @Schema(description = "城市（精确）", example = "深圳市")
     private String city;
 

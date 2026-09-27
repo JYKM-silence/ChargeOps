@@ -10,7 +10,7 @@ import java.util.List;
 /**
  * 封装分页查询结果
  *
- * <p><b>为什么要有这个类，而不是直接返回 PageHelper 的 {@code Page}：</b>
+ * <p>为什么要有这个类，而不是直接返回 PageHelper 的 {@code Page}：
  * {@code com.github.pagehelper.Page} 继承自 {@code ArrayList}，
  * 除了数据本身还带着 pageNum / pageSize / total / pages 等一堆字段，
  * 直接序列化它返回前端等于把分页插件的内部结构变成了对外契约 ——

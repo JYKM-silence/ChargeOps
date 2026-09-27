@@ -1,57 +1,40 @@
-# ============================================================================
-# ChargeOps 本地依赖：MySQL + Redis
-# ============================================================================
-# 只起**基础设施**，不起应用。应用在 VS Code 里跑（或 mvn spring-boot:run），
-# 这样改代码不用重建镜像，调试体验好得多。
+# ChargeOps 本地依赖：MySQL + Redis。
+#
+# 只起基础设施，不起应用 —— 应用在 VS Code 里跑（或 mvn spring-boot:run），
+# 改代码不用重建镜像。
 #
 #   docker compose up -d          起依赖
 #   docker compose ps             看状态
 #   docker compose logs -f mysql  看某个服务的日志
 #   docker compose down           停掉（数据保留在卷里）
-#   docker compose down -v        停掉**并删除数据卷**（下次起来是空库）
+#   docker compose down -v        停掉并删除数据卷（下次起来是空库）
 #
-# ★★ 这里发布的是 13306 / 16379，但应用默认连的是 3306 / 6379 ★★
+# 这里发布的是 13306 / 16379，但应用默认连的是 3306 / 6379，不是写错了：
+# 本机已经装了 MySQL80（占 3306）和 Redis（E:\redis，占 6379），所以这个 compose
+# 是「不想用本机那套时」的备用路径，必须换端口，否则 up 会报端口被占用。
 #
-#   这两个数字不一样，不是写错了。原因是**本机已经有 MySQL 和 Redis 了**：
-#       MySQL80 服务  占着 127.0.0.1:3306
-#       E:\redis       占着 127.0.0.1:6379
-#   所以这个 compose 是「不想用本机那套时的一条备用路径」，
-#   它必须换端口，否则 `docker compose up` 会直接报端口被占用。
+#   路径 A（默认）本机 MySQL80 + E:\redis   3306 / 6379    Redis db 1
+#   路径 B         docker compose           13306 / 16379  Redis db 0
 #
-#   两条路径（application-dev.yml 开头也有同样的说明）：
-#       路径 A（**默认**）本机 MySQL80 + E:\redis   3306 / 6379   Redis db 1
-#       路径 B            docker compose            13306 / 16379  Redis db 0
-#   切到路径 B：
-#       CHARGE_OPS_DB_PORT=13306 CHARGE_OPS_REDIS_PORT=16379 \
-#       CHARGE_OPS_REDIS_DB=0 mvn spring-boot:run
+# 切到路径 B：
+#   CHARGE_OPS_DB_PORT=13306 CHARGE_OPS_REDIS_PORT=16379 \
+#   CHARGE_OPS_REDIS_DB=0 mvn spring-boot:run
 #
-#   ★★ 真正把新老项目隔开的是「库名 / Redis 库号」，不是端口 ★★
+# 真正把两个项目隔开的是库名和 Redis 库号，不是端口：路径 A 的端口和老项目
+# sky-take-out 是共用的（它也在 3306 / 6379）。以为「端口不同就安全」会踩到一个
+# 不报错的坑 —— 连接是成功的，只有数据不对劲。实际起作用的是 MySQL 库名不同
+# （chargeops vs sky_take_out）和 Redis 库号不同（1 vs 0，Redis 没有库名，
+# 这是唯一的分隔手段）。两边都用各自的 key 前缀，共用 db 0 会互相覆盖会话数据。
 #
-#   本机那套（路径 A）的端口和老项目 sky-take-out 是**共用**的：
-#   老项目在 3306 / 6379 上。如果误以为「端口不同就安全」，
-#   就会踩到一个没有报错的坑 —— 连接是成功的，只有数据不对劲，
-#   比如「新项目往老库的 employee 表里插数据」。
-#
-#   实际起作用的是这两条：
-#       MySQL —— 库名不同（chargeops vs sky_take_out）
-#       Redis —— 库号不同（1 vs 0）。Redis 没有「库名」，
-#                只有 0~15 的编号，这是唯一的分隔手段。
-#                ★ 必须做：两边都用 `chat:session:` 这个 key 前缀，
-#                  共用 db 0 会互相覆盖对方的会话数据
-#
-#   应用端口 8081（老项目 8080）确实是错开的 —— 这个必须错开，
-#   否则两个应用不能同时启动，而报错是「端口被占用」，一眼能看出来。
-# ============================================================================
+# 应用端口 8081（老项目 8080）必须错开，否则两个应用不能同时启动。
 
 services:
 
   mysql:
-    # ★ 8.4 而不是 8.0 —— MySQL 8.0 已于 2026-04 结束官方支持。
-    #   社区版和企业版的版本号在 8.4 之后重新对齐，所以 8.4 是当前的 LTS 线。
+    # 8.4 而不是 8.0：MySQL 8.0 已于 2026-04 结束官方支持，8.4 是当前的 LTS 线。
     image: mysql:8.4
-    # container_name 加前缀，避免和别的项目的 mysql 容器重名。
-    # 不加的话 docker compose up 会报容器名冲突，而报错里说的是
-    # 「这个名字已被占用」，不说是哪个项目占的
+    # container_name 加前缀，避免和别的项目的容器重名。不加的话 up 会报容器名
+    # 冲突，而报错只说「这个名字已被占用」，不说是哪个项目占的。
     container_name: chargeops-mysql
     restart: unless-stopped
     ports:
@@ -59,47 +42,33 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: "123456"
       MYSQL_DATABASE: chargeops
-      # ★ TZ 和下面的 command 里的 default-time-zone 必须一起设。
-      #   只设其中一个的话，会出现「容器里的 date 命令是东八区，
-      #   但 MySQL 的 CURRENT_TIMESTAMP 是 UTC」这种割裂状态 ——
-      #   而 DDL 里 create_time 的默认值正是 CURRENT_TIMESTAMP(3)。
+      # TZ 和下面 command 里的 default-time-zone 必须一起设：只设其中一个会出现
+      # 「容器里的 date 是东八区，但 MySQL 的 CURRENT_TIMESTAMP 是 UTC」的割裂，
+      # 而 DDL 里 create_time 的默认值正是 CURRENT_TIMESTAMP(3)。
       TZ: Asia/Shanghai
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
-      # ★ 让数据库端的 CURRENT_TIMESTAMP 走东八区。
-      #   不设的话默认是 UTC，于是「数据库自动填的创建时间」比
-      #   「Java 填的业务时间」差 8 小时 —— 同一条记录里两个时间对不上。
-      #   这和连接串里的 forceConnectionTimeZoneToSession=true 是双保险：
-      #   一个设服务端默认值，一个设连接会话值
+      # 让数据库端的 CURRENT_TIMESTAMP 走东八区。默认是 UTC，于是「数据库自动填的
+      # 创建时间」比「Java 填的业务时间」差 8 小时，同一条记录里两个时间对不上。
+      # 和连接串里的 forceConnectionTimeZoneToSession=true 是双保险。
       - --default-time-zone=+08:00
     volumes:
       - chargeops-mysql-data:/var/lib/mysql
-      # ★ SQL 脚本**故意不挂到 docker-entrypoint-initdb.d**。
+      # 故意不把 SQL 脚本挂到 docker-entrypoint-initdb.d：挂上去只有在数据卷为空
+      # 的那一次启动才会执行，改了脚本重启容器什么都不会发生，而你会以为脚本有问题。
+      # 加表改字段时更糟，后续变更根本没有地方落，容易演变成「把数据卷删了重建」。
       #
-      #   挂上去的话，只有在「数据卷是空的」那一次启动才会执行 ——
-      #   也就是说你改了脚本、重启容器，什么都不会发生，
-      #   而你会以为脚本有问题。
+      # 表结构现在由 Flyway 在应用启动时管，迁移文件在
+      # src/main/resources/db/migration/，跟应用走不跟容器走。这个 compose 只负责
+      # 让库存在（MYSQL_DATABASE: chargeops 建的就是它）。
       #
-      #   更糟的是加表/改字段时：initdb.d 里的脚本只跑一次，
-      #   后续变更根本没有地方落，容易演变成「把数据卷删了重建」——
-      #   开发阶段还行，一旦库里有想保留的数据就麻烦了。
-      #
-      #   ★★ 现在表结构由 Flyway 在应用启动时管 ★★
-      #
-      #   initdb.d 这个坑正是当初必须换掉手工脚本的原因之一。迁移文件在
-      #   src/main/resources/db/migration/，跟应用一起走，不跟容器走。
-      #
-      #   这个 compose 只负责让**库存在**（MYSQL_DATABASE: chargeops 建的就是它）。
-      #   建完之后什么都不用做，启动应用时 Flyway 会把表建好。
-      #
-      #   不在这里挂载任何 .sql —— 挂了反而会造出一个「容器建过一次、
-      #   Flyway 又不知道」的分叉状态，而 Flyway 的 baseline 会
-      #   **接受**那个分叉（见 README「baseline 是相信，不是校验」）。
+      # 挂载 .sql 反而会造出一个「容器建过一次、Flyway 又不知道」的分叉状态，
+      # 而 Flyway 的 baseline 会接受那个分叉。
     healthcheck:
-      # healthcheck 让 `docker compose up --wait` 能等到数据库真的可用再返回。
-      # 没有它的话，容器「启动完成」和「能接受连接」之间还有几秒，
-      # 应用在这几秒里启动就会报 Communications link failure
+      # 让 `docker compose up --wait` 能等到数据库真的可用再返回。没有它的话，
+      # 「容器启动完成」和「能接受连接」之间还有几秒，应用在这几秒里启动就会报
+      # Communications link failure。
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p123456"]
       interval: 5s
       timeout: 5s
@@ -107,11 +76,9 @@ services:
       start_period: 30s
 
   redis:
-    # ★ 用普通 redis 而不是 redis-stack-server。
-    #   redis-stack 是给 P2 的向量检索（RediSearch）准备的，
-    #   现在还没有用到它 —— 提前换上去只会让镜像从 30MB 变成 500MB，
-    #   并且引入一个当前完全没有被验证过的组件。
-    #   到 P2 真的要用时再换，那时它会被真实使用、真实验证
+    # 用普通 redis 而不是 redis-stack-server：redis-stack 是给 P2 的向量检索
+    # （RediSearch）准备的，现在没用到，提前换上去只会让镜像从 30MB 变成 500MB，
+    # 并引入一个当前完全没有被验证过的组件。到 P2 真要用时再换。
     image: redis:7.4-alpine
     container_name: chargeops-redis
     restart: unless-stopped
@@ -119,23 +86,19 @@ services:
       - "16379:6379"
     command:
       - redis-server
-      # ★ 开 AOF 持久化。
+      # 开 AOF 持久化。本项目 Redis 里存的不只是缓存，还有分布式锁、会话、
+      # 连接器占用状态 —— 纯内存模式下容器重启这些全丢，表现可能是「锁还在但持有者
+      # 已经没了」或者「用户莫名其妙要重新登录」。
       #
-      # 本项目 Redis 里存的不只是缓存 —— 分布式锁、会话、以及 P1 之后的
-      # 「连接器占用状态」都有。纯内存模式下容器重启这些全丢，
-      # 表现可能是「锁还在但持有者已经没了」或者「用户莫名其妙要重新登录」。
-      #
-      # appendfsync everysec 是性能和安全的折中：最多丢 1 秒的数据，
-      # 而对每条写都 fsync（always）会让 Redis 的吞吐掉一个数量级。
+      # appendfsync everysec 是折中：最多丢 1 秒数据，而每条写都 fsync 会让吞吐掉
+      # 一个数量级。
       - --appendonly
       - "yes"
       - --appendfsync
       - "everysec"
-      # 明确设最大内存和淘汰策略。
-      # ★ 不设的话 Redis 会一直吃内存直到被 OOM Killer 杀掉，
-      #   而且杀掉之前不会有任何警告。
-      #   noeviction 表示「内存满了就拒绝写入」而不是「淘汰旧数据」——
-      #   对存了锁和会话的 Redis，静默淘汰比拒绝写入危险得多
+      # 明确设最大内存和淘汰策略：不设的话 Redis 会一直吃内存直到被 OOM Killer
+      # 杀掉，而且杀掉之前不会有任何警告。noeviction 是「内存满了拒绝写入」而不是
+      # 「淘汰旧数据」，对存了锁和会话的 Redis，静默淘汰比拒绝写入危险得多。
       - --maxmemory
       - "512mb"
       - --maxmemory-policy

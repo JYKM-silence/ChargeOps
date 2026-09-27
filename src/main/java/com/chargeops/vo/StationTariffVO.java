@@ -9,31 +9,31 @@ import java.time.LocalDateTime;
 /**
  * 站点计费绑定信息
  *
- * <h2>★ 一、{@code templateName} / {@code templateCode} 必须补，但理由和充电桩补站名不同</h2>
+ * 一、{@code templateName} / {@code templateCode} 必须补，但理由和充电桩补站名不同
  *
  * <p>{@code station_tariff} 表里只有 {@code template_id}，一行绑定数据显示成
- * 「模板 7：2026-01-01 起生效」是<b>没有信息量的</b> —— 没有人记得模板 7 是哪个价，
+ * 「模板 7：2026-01-01 起生效」是没有信息量的 —— 没有人记得模板 7 是哪个价，
  * 而这正是管理员打开这个页面要回答的问题。
  *
- * <p>★ 和 {@code ChargerVO.stationName} 的差别在于推理：<b>桩列表补站名是为了
+ * <p> 和 {@code ChargerVO.stationName} 的差别在于推理：桩列表补站名是为了
  * 「能认出这根桩」（对象的标识），绑定列表补模板名是为了「这次改价改成了什么」
- * （变更的内容）。</b>补的方式是批量：{@code listByStationId} 拿到一页绑定之后
+ * （变更的内容）。补的方式是批量：{@code listByStationId} 拿到一页绑定之后
  * 去重收集 {@code templateId}，调一次 {@code TariffTemplateMapper.listByIds}
  * 换取 id → (name, code) 的映射。{@code listByIds} 存在的唯一用途就是这个。
  *
- * <p>★ 同样注意 {@code PageHelper} 的时机：补名字的查询<b>必须</b>在
- * {@code startPage} 之后的那条查询<b>之后</b>执行，否则它会把 {@code LIMIT} 消费掉。
+ * <p> 同样注意 {@code PageHelper} 的时机：补名字的查询必须在
+ * {@code startPage} 之后的那条查询之后执行，否则它会把 {@code LIMIT} 消费掉。
  * 完整的调用顺序和那个 bug 的三个特征见 {@code ChargerVO} 类注释。
  *
- * <h2>★ 二、{@code stationId} 在，{@code stationName} 不在</h2>
+ * 二、{@code stationId} 在，{@code stationName} 不在
  *
  * <p>绑定的列表接口永远按站点查，而且 {@code StationTariffMapper} 里根本没有
  * {@code page} 方法，只有一个 {@code listByStationId} —— 「这一页的所有行属于哪个站点」
- * 是调用方自己传进来的参数。<b>补名的那一列，必须是这一页数据自己回答不了的问题。</b>
+ * 是调用方自己传进来的参数。补名的那一列，必须是这一页数据自己回答不了的问题。
  *
- * <h2>★ 三、{@code effectiveTo} 为 null 表示长期有效</h2>
+ * 三、{@code effectiveTo} 为 null 表示长期有效
  *
- * <p>半开区间 {@code [effectiveFrom, effectiveTo)}：null 是<b>无限远</b>，不是「不生效」。
+ * <p>半开区间 {@code [effectiveFrom, effectiveTo)}：null 是无限远，不是「不生效」。
  * 界面必须把它渲染成「长期有效」而不是空白，否则管理员会以为这条绑定有问题。
  */
 @Data
@@ -57,7 +57,7 @@ public class StationTariffVO implements Serializable {
     /**
      * 模板编码
      *
-     * <p>★ 除了名称之外还返回编码，因为名称<b>允许重名</b>而编码唯一
+     * <p> 除了名称之外还返回编码，因为名称允许重名而编码唯一
      * （见 {@code TariffTemplate} 类注释第二节）。列表里出现两个叫「深圳分时电价」的
      * 模板时，编码是唯一能区分它们的字段。
      */

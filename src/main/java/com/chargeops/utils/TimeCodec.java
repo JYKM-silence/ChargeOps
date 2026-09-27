@@ -8,36 +8,36 @@ import java.util.regex.Pattern;
 /**
  * MySQL {@code TIME} 列的编解码：{@code "HH:mm:ss"} ↔ 当日分钟数
  *
- * <h2>★ 为什么需要它：{@code 24:00:00} 不是时刻，是时长</h2>
+ * 为什么需要它：{@code 24:00:00} 不是时刻，是时长
  *
  * <p>项目里有四列 MySQL {@code TIME}：{@code station.open_time/close_time}、
- * {@code tariff_rule.start_time/end_time}。它们在实体里以 <b>{@code String}</b> 进出，
+ * {@code tariff_rule.start_time/end_time}。它们在实体里以 {@code String} 进出，
  * 只有真正需要算术的地方（切分时段、比较开闭店先后）才转成分钟数 —— 这里是唯一的转换点。
  *
- * <p><b>为什么不用 {@code java.time.LocalTime}：</b>它的上限是
+ * <p>为什么不用 {@code java.time.LocalTime}：它的上限是
  * {@code 23:59:59.999999999}，{@code 24:00:00} 在定义域之外。更本质的原因是
- * <b>MySQL 的 {@code TIME} 不是「一天中的时刻」而是有符号时长</b>
+ * MySQL 的 {@code TIME} 不是「一天中的时刻」而是有符号时长
  * （{@code -838:59:59} ~ {@code 838:59:59}）—— 这才是 {@code '24:00:00'} 合法的原因，
  * 映射到 {@code LocalTime} 是范畴错误。已真机验证：{@code '24:00:00'} 写进
  * {@code close_time} 再读回来仍是 {@code '24:00:00'}（不回绕成 {@code '00:00:00'}）。
  *
- * <h2>为什么用 {@code String} 而不是 {@code Integer} 分钟</h2>
+ * 为什么用 {@code String} 而不是 {@code Integer} 分钟
  *
  * <p>分钟数才是算术上「原生」的表示，但它会把这个转换推到 API、日志、Swagger 示例、
  * 前端表单的每一处 —— 那些地方想看的都是 {@code "08:00:00"}。用 {@code String}
- * 让转换<b>只在一个方向发生一次</b>：MyBatis 默认的 {@code StringTypeHandler}
+ * 让转换只在一个方向发生一次：MyBatis 默认的 {@code StringTypeHandler}
  * 直接调 {@code rs.getString()}，值字节级原样进出。顺带零填充的 {@code HH:mm:ss}
  * 字典序和时间序一致，万一哪里直接比较也不会错。
  */
 public final class TimeCodec {
 
-    /** 一天的分钟数。★ {@code 24:00:00} 就等于它 —— 这是半开区间收尾的表示 */
+    /** 一天的分钟数。 {@code 24:00:00} 就等于它 —— 这是半开区间收尾的表示 */
     public static final int MINUTES_PER_DAY = 1440;
 
     /**
      * 匹配 {@code HH:mm} 或 {@code HH:mm:ss}
      *
-     * <p><b>★ 秒必须是可选的。</b>HTML 的 {@code <input type="time">} 在秒为 0 时
+     * <p> 秒必须是可选的。HTML 的 {@code <input type="time">} 在秒为 0 时
      * 提交的是 {@code "08:00"} 而不是 {@code "08:00:00"} —— 只认带秒的格式，
      * 表现是「页面上填得好好的营业时间，一保存就说格式不对」。
      */
@@ -67,9 +67,9 @@ public final class TimeCodec {
         int minute = Integer.parseInt(matcher.group(2));
         int second = matcher.group(3) == null ? 0 : Integer.parseInt(matcher.group(3));
 
-        // ★ 上界只允许 24:00:00 这一个值，不是「小时 <= 24」—— 那样 24:30:00
-        //   也会通过。这四列 TIME 表达的都是「当天的某个分界点」，24 点之后只能是次日 0 点；
-        //   MySQL 的 TIME 能存到 838 小时是它的时长语义，不是我们这几列想要的。
+        // 上界只允许 24:00:00 这一个值，不是「小时 <= 24」—— 那样 24:30:00
+        // 也会通过。这四列 TIME 表达的都是「当天的某个分界点」，24 点之后只能是次日 0 点；
+        // MySQL 的 TIME 能存到 838 小时是它的时长语义，不是我们这几列想要的。
         if (hour == 24 && (minute != 0 || second != 0)) {
             throw new ParamErrorException("24 点只允许写 24:00:00，收到：" + time);
         }

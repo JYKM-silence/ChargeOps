@@ -14,15 +14,15 @@ import java.time.LocalDateTime;
 /**
  * 订单列表项
  *
- * <p>★ {@code status} 同时给出数字和中文标签，理由同 {@code WalletTransactionVO}：
+ * <p> {@code status} 同时给出数字和中文标签，理由同 {@code WalletTransactionVO}：
  * 前端不该自己维护一份「1=待启动」的映射 —— 那份映射一旦和枚举漂移，
  * 界面上会出现用户看不懂的数字，而且不报错。
  *
- * <p>★ <b>没有 {@code memberId}、{@code tariffTemplateId}、{@code frozenAmount}。</b>
+ * <p> 没有 {@code memberId}、{@code tariffTemplateId}、{@code frozenAmount}。
  * 列表是给车主看的，冻结金额和计费模板是内部概念，暴露它们只会让用户问
  * 「为什么冻了我 127 块」—— 而那笔钱在结算后会精确地按实付扣除。
  *
- * <p>★ {@code plateNo} 读的是订单上的<b>快照列</b>，不是 JOIN {@code vehicle}
+ * <p> {@code plateNo} 读的是订单上的快照列，不是 JOIN {@code vehicle}
  * 拿的当前车牌。见 {@code ChargingOrder.plateNo} 的说明。
  */
 @Data
@@ -53,10 +53,10 @@ public class ChargingOrderVO implements Serializable {
 
     private BigDecimal totalEnergyKwh;
 
-    /** 应付。★ 未结算时为 null */
+    /** 应付。 未结算时为 null */
     private BigDecimal totalAmount;
 
-    /** 实付 = 应付 − 优惠。★ 未结算时为 null */
+    /** 实付 = 应付 − 优惠。 未结算时为 null */
     private BigDecimal payAmount;
 
     public static ChargingOrderVO from(ChargingOrder order) {

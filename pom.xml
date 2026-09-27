@@ -18,34 +18,12 @@
     <description>新能源充电桩运营平台</description>
 
     <!--
-      ============================================================================
-      单模块，不是老库的三模块
-      ============================================================================
-      sky-take-out 拆成 sky-common / sky-pojo / sky-server 是教程形态：
-      它要演示「多模块聚合 + 依赖管理」，所以必须让 common 不依赖 server。
+      单模块，不是老库的三模块：多模块下改了 sky-common 要 mvn install 才能被
+      sky-server 看到，顺序错了就报「找不到符号」，而真实原因是没装到本地仓库。
 
-      但那个结构有真实成本：
-        1. 改了 sky-common 要 mvn install 才能被 sky-server 看到，
-           顺序错了就报「找不到符号」，而真实原因是没装到本地仓库
-        2. VS Code 里要配多根工作区，Java 语言服务器才能正确解析跨模块引用
-        3. pojo 模块里放的是 DTO/VO/entity，改动最频繁，
-           每次都要多走一遍 install
-
-      单模块没有这些问题。后期真要拆（比如把 agent 抽成独立服务），
-      那是纯机械操作：建目录、挪包、加 module 声明，不涉及任何逻辑改动。
-
-      ============================================================================
-      依赖版本从哪来
-      ============================================================================
-      Boot 的 BOM（spring-boot-dependencies）已经代管了下面这些，**故意不写版本号**：
-        mysql-connector-j        → 9.7.0
-        lombok                   → 1.18.46
-        spring-security-crypto   → 7.1.1（通过 spring-security-bom 传递引入）
-
-      不写版本号的好处：升级 Boot 时这些跟着一起升，不会出现
-      「Boot 升了但某个驱动还停在两年前」这种只有出问题才会发现的漂移。
-
-      下面 properties 里写的版本，是 BOM 管不到、必须自己钉住的第三方组件。
+      Boot 的 BOM（spring-boot-dependencies）代管了下面几个，故意不写版本号：
+      mysql-connector-j、lombok、spring-security-crypto。properties 里写的版本，
+      是 BOM 管不到、必须自己钉住的第三方组件。
     -->
 
     <properties>
@@ -69,11 +47,8 @@
         </dependency>
 
         <!--
-          参数校验（@NotNull / @Min / @Pattern）。
-          充电桩接口的参数约束比外卖多得多，随手写 if 判断会淹掉业务逻辑：
-            POST /api/admin/connector/{id}/start  body: {"memberId": null}
-            POST /api/admin/package                body: {"price": -1}
-          这些应该在进 Service 之前就被拦下来，返回 400 而不是让脏数据流进数据库。
+          参数校验（@NotNull / @Min / @Pattern）：脏数据要在进 Service 之前就被
+          拦下来返回 400，而不是靠 Service 里随手写 if 判断。
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -81,36 +56,14 @@
         </dependency>
 
         <!--
-          ★★ 这里**故意没有** spring-boot-starter-aop / starter-aspectj ★★
+          这里故意没有 spring-boot-starter-aop / starter-aspectj。自动填充最初
+          写成 @Aspect 切面，结果是切点匹配、启动零报错，但一次都没触发过 ——
+          MyBatis 的 Mapper 由 MapperFactoryBean 生产，不经过 BeanPostProcessor，
+          Spring AOP 没有机会织入。填充现改由 MyBatis 插件 AutoFillInterceptor 实现。
 
-          自动填充最初是写成 @Aspect 切面的（教程的标准写法），为了它引了
-          AOP starter。结果是：切点匹配、切面 bean 注册、启动零报错，
-          但**一次都没触发过** —— 因为 MyBatis 的 Mapper 由 MapperFactoryBean
-          生产，产出的 MapperProxy 不经过 BeanPostProcessor，
-          Spring AOP 根本没有机会织入代理。
-
-          也就是说，那个 starter 从一开始就没起过作用。既然填充现在改由
-          MyBatis 插件（AutoFillInterceptor）实现，这个依赖就是纯闲置的，删掉。
-          完整的排查过程见 AutoFillInterceptor 的类注释。
-
-          ★ 关于 Boot 4 的改名，有两条仍然值得记住（将来真需要 AOP 时会撞上）：
-
-          1. artifactId 从 spring-boot-starter-aop
-             **改名成了 spring-boot-starter-aspectj**。
-             名字里不再有 "aop"，所以按老经验敲 spring-boot-starter-aop
-             会直接构建失败：
-                 'dependencies.dependency.version' ... is missing
-             这个报错说的是「缺版本号」，很容易被理解成「忘了写 <version>」，
-             于是去补一个版本号，然后才发现坐标本身在 BOM 里根本不存在。
-             真正的含义是「BOM 不认识这个坐标」。
-
-          2. ★ 删掉它**不影响 @Transactional**。spring-aop 是被 spring-webmvc
-             传递引进来的（spring-webmvc → spring-aop），而 @Transactional 走的是
-             spring-tx 自己的 InfrastructureAdvisorAutoProxyCreator，
-             不需要 aspectjweaver。
-             真正会缺的只有一件事：@AspectJ 风格的切面 —— 因为
-             @Pointcut 表达式的解析需要 aspectjweaver。换句话说，
-             **将来要写切面时，把这一行加回来就对了**。
+          Boot 4 里它改名成了 spring-boot-starter-aspectj（名字里不再有 "aop"，按
+          老名字敲会报 'dependencies.dependency.version' is missing，真正的含义是
+          BOM 不认识这个坐标）；删掉它不影响 @Transactional，缺的只有 @AspectJ 风格的切面。
         -->
 
         <!-- ==================== 数据层 ==================== -->
@@ -121,15 +74,11 @@
         </dependency>
 
         <!--
-          PageHelper。
+          PageHelper 必须排除它传递进来的 mybatis-spring-boot-starter：
+          pagehelper-spring-boot-starter 自己声明了这条依赖，上面又显式引了
+          4.1.0，两个版本打架的结果可能是 SqlSessionFactory 装配失败，
+          也可能是分页静默失效（SQL 里没拼 LIMIT，但接口照常返回数据，不报错）。
 
-          ★ 必须排除它传递进来的 mybatis-spring-boot-starter。
-          pagehelper-spring-boot-starter 自己声明了 mybatis-spring-boot-starter 依赖，
-          如果我们上面又显式引了 4.1.0，Maven 的「最近优先」规则会让两个版本打架 ——
-          结果可能是 SqlSessionFactory 装配失败，也可能是**分页静默失效**
-          （SQL 里没拼 LIMIT，但接口照常返回数据，不报错）。
-
-          排除之后，MyBatis 的版本只有一个来源：上面那一条。
           验证命令：mvn dependency:tree -Dincludes=org.mybatis.spring.boot
         -->
         <dependency>
@@ -145,15 +94,11 @@
         </dependency>
 
         <!--
-          Druid 连接池。
-
-          ★ artifactId 里的 "-4-" 是重点：Boot 4 用的是 jakarta.servlet，
-          而老库那个 druid-spring-boot-starter（无后缀）和 druid-spring-boot-3-starter
-          都是绑定 javax.servlet / jakarta 过渡期的产物。
-          引错了不会在编译期报错，而是在**启动时**炸：
-              java.lang.ClassNotFoundException: javax.servlet.Filter
-          这个错看起来像「少了 servlet-api」，实际原因是 FATAL 级的版本错配，
-          排查方向一旦跑偏就很难找回来。
+          Druid 连接池。artifactId 里的 "-4-" 是重点：Boot 4 用 jakarta.servlet，
+          无后缀的 druid-spring-boot-starter 和 druid-spring-boot-3-starter
+          都绑 javax.servlet。引错了编译期不报错，启动时炸
+          java.lang.ClassNotFoundException: javax.servlet.Filter
+          —— 这个错看起来像「少了 servlet-api」，实际是版本错配。
         -->
         <dependency>
             <groupId>com.alibaba</groupId>
@@ -169,33 +114,16 @@
         </dependency>
 
         <!--
-          数据库迁移。
+          数据库迁移。必须是 spring-boot-starter-flyway，不是裸的 flyway-core：
+          Boot 4 把 Flyway 的自动配置拆成了独立模块，只引 flyway-core 的后果是
+          jar 在 classpath 上，但没有任何东西会去读 db/migration —— 没有报错、
+          没有日志，启动一切正常，而迁移一条都没跑，看起来却是成功的。
 
-          ★★ 必须是 spring-boot-starter-flyway，**不是**裸的 flyway-core ★★
+          三个坐标都不写版本号，由 Boot 的 BOM 统一管理。
 
-          Boot 4 把 Flyway 的自动配置从 spring-boot-autoconfigure 里拆了出去，
-          变成了独立模块。这一点可以自己核实：
-
-              unzip -p spring-boot-autoconfigure-4.1.1.jar \
-                  META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports \
-                  | grep -i flyway
-              → 没有任何匹配
-
-          所以只引 flyway-core 的后果是：**jar 在 classpath 上，但没有任何东西
-          会去读 db/migration**。没有任何报错、没有任何日志，启动一切正常，
-          而迁移一条都没跑 —— 这是最难发现的一种失败，因为「看起来成功了」。
-          它不是「少个功能」，是「你以为有了保护，实际没有」。
-
-          ★ 三个坐标都不写版本号：flyway-core / flyway-mysql 由 Boot 的 BOM
-          钉在 12.4.0（见 spring-boot-dependencies-4.1.1.pom 的 flyway.version），
-          starter 本身也由 BOM 管理。这是本 pom 一贯的做法（见文件头的说明）。
-
-          ★ 为什么要单独引 flyway-mysql：Flyway 9 之后数据库支持被拆成
-          flyway-database-* 系列，MySQL 的方言包不在 flyway-core 里。
-          缺了它的报错是启动时的
-              "Unsupported Database: MySQL 8.4"
-          —— 看起来像「Flyway 不支持这个版本」，实际只是少了一个方言包。
-          （注意 BOM 里的坐标就叫 flyway-mysql，没有 flyway-database-mysql 这一项。）
+          必须单独引 flyway-mysql：Flyway 9 之后 MySQL 的方言包不在 flyway-core
+          里（BOM 里的坐标就叫 flyway-mysql），缺了它启动时报
+          "Unsupported Database: MySQL 8.4"，看起来像「不支持这个版本」。
 
           验证命令：mvn dependency:tree -Dincludes=org.flywaydb
         -->
@@ -219,10 +147,9 @@
         </dependency>
 
         <!--
-          连接池。spring-boot-starter-data-redis 只引入 lettuce 核心，
-          没有 commons-pool2 的话 lettuce 只能用一个共享连接，
-          在「枪状态高频读写 + 遥测批量入库」的场景下会成为瓶颈。
-          加上它之后 lettuce 才启用连接池（spring.data.redis.lettuce.pool.* 才会生效）。
+          连接池。spring-boot-starter-data-redis 只引入 lettuce 核心，没有
+          commons-pool2 的话 lettuce 只能用一个共享连接，枪状态高频读写时会成为
+          瓶颈；加上它之后 spring.data.redis.lettuce.pool.* 才会生效。
         -->
         <dependency>
             <groupId>org.apache.commons</groupId>
@@ -231,12 +158,10 @@
 
         <!-- ==================== 密码加密 ==================== -->
         <!--
-          只引 spring-security-crypto 这一个包，**绝不引 spring-boot-starter-security**。
-
-          区别是致命的：crypto 只提供 BCrypt 这类纯算法，是个普通工具库；
-          而 starter-security 会往容器里塞一整条过滤器链，
-          效果是**所有接口默认都要登录**，返回 401 或跳转到一个登录页
-          （而且是 Spring 自带的那个，不是我们的）。排查时会以为是 JWT 拦截器配错了。
+          只引 spring-security-crypto 这一个包，绝不引 spring-boot-starter-security：
+          crypto 只提供 BCrypt 这类纯算法，而 starter-security 会往容器里塞一整条
+          过滤器链，效果是所有接口默认都要登录，返回 401 或跳转到 Spring 自带的
+          那个登录页，排查时会以为是 JWT 拦截器配错了。
 
           版本由 Boot 的 spring-security-bom 统一管理，不写版本号。
         -->
@@ -247,17 +172,12 @@
 
         <!-- ==================== 接口文档 ==================== -->
         <!--
-          springdoc 替代 knife4j。
+          springdoc 替代 knife4j：knife4j 底层的 springfox 已停止维护多年，且和
+          Spring Boot 2.6+ 的 PathPatternParser 冲突，老库为此在 application.yml 里
+          挂的 spring.mvc.pathmatch.matching-strategy: ant_path_matcher 补丁会让
+          整个应用的路径匹配退回旧实现。
 
-          老库用 knife4j 3.0.2，底层是 springfox + Swagger 2 规范。
-          springfox 已经停止维护多年，且和 Spring Boot 2.6+ 的 PathPatternParser 冲突 ——
-          老库为此在 application.yml 里挂了
-              spring.mvc.pathmatch.matching-strategy: ant_path_matcher
-          这个补丁，副作用是**整个应用的路径匹配退回旧实现**，
-          以后出现「拦截器为什么没拦住 /admin/x」这类问题时，这行配置会让因果链变得难以解释。
-
-          springdoc 原生跑在 PathPatternParser 上，不需要任何补丁，
-          而且它读的是 OpenAPI 3 规范，生成的 JSON 可以直接喂给 Postman / Apifox 导入。
+          springdoc 原生跑在 PathPatternParser 上，读的是 OpenAPI 3 规范。
         -->
         <dependency>
             <groupId>org.springdoc</groupId>
@@ -267,20 +187,13 @@
 
         <!-- ==================== JWT ==================== -->
         <!--
-          jjwt 从 0.9.1 升到 0.12.x 是**破坏性变更**，API 完全换了一套：
-              0.9.1   Jwts.parser().setSigningKey(byte[]).parseClaimsJws(t).getBody()
-              0.12.x  Jwts.parser().verifyWith(SecretKey).build().parseSignedClaims(t).getPayload()
+          0.12.x 的 Keys.hmacShaKeyFor 会校验 HS256 要求密钥 ≥ 256 bit 即 32 字节，
+          不够就抛 WeakKeyException；老库的默认密钥是 "itcast"（6 字节）和
+          "itheima"（7 字节），直接拷过来必炸，而且报的是 500 不是 401。
 
-          更关键的是密钥强度：0.9.1 允许任意长度的密钥，
-          0.12.x 用 Keys.hmacShaKeyFor 会校验 HS256 要求 ≥ 256 bit 即 **32 字节**，
-          不够就抛 WeakKeyException。
-          老库的默认密钥是 "itcast"（6 字节）和 "itheima"（7 字节），
-          直接拷过来必炸 —— 而且报的是 500 不是 401，很容易误判成「拦截器坏了」。
-
-          三件套缺一不可，运行时三个 jar 都要在：
-            jjwt-api    编译期接口
-            jjwt-impl   runtime 实现（scope=runtime，编译时看不到是正确的）
-            jjwt-jackson JSON 序列化，缺了会在签发时抛 UnsupportedJwtException
+          三件套缺一不可，运行时三个 jar 都要在：jjwt-api 编译期接口；
+          jjwt-impl runtime 实现（scope=runtime，编译时看不到是正确的）；
+          jjwt-jackson JSON 序列化，缺了会在签发时抛 UnsupportedJwtException。
         -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
@@ -299,14 +212,11 @@
             <version>${jjwt.version}</version>
             <scope>runtime</scope>
         </dependency>
-        <!-- 注意：0.9.1 时代需要的 jaxb-api 在 0.12.x 上完全不需要了，已删除 -->
 
         <!-- ==================== 报表导出 ==================== -->
         <!--
-          用 poi-ooxml，但代码里一律用 SXSSFWorkbook 而不是 XSSFWorkbook。
-          区别：XSSF 把整个工作簿放在内存里，导 10 万行充电流水会直接 OOM；
-          SXSSF 是流式写，只在内存里保留滑动窗口内的若干行。
-          对账报表天然是「一次导出几万条」，这个选择不是优化是必需。
+          用 poi-ooxml，但代码里一律用 SXSSFWorkbook 而不是 XSSFWorkbook：
+          XSSF 把整个工作簿放在内存里，导几万行充电流水会直接 OOM，SXSSF 是流式写。
         -->
         <dependency>
             <groupId>org.apache.poi</groupId>
@@ -316,9 +226,8 @@
 
         <!-- ==================== 可观测性 ==================== -->
         <!--
-          P3 才正式用，但现在就加上：成本为零，而且 P0 验收时
-          /actuator/health 能立刻告诉我们「数据库连上了吗、Redis 连上了吗」，
-          比看启动日志里有没有异常快得多。
+          P3 才正式用，但现在加上成本为零：P0 验收时 /actuator/health 能立刻
+          告诉我们数据库和 Redis 连上没有。
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -333,14 +242,10 @@
         </dependency>
 
         <!--
-          配置元数据处理器。
-          作用是在编译期扫描 @ConfigurationProperties 类，生成
-          META-INF/spring-configuration-metadata.json。
-          有了它，在 application.yml 里敲 "sky.jwt." 时 VS Code 会提示出后面有哪些项、
-          以及每一项的中文注释（就是 Java 字段上那行 javadoc）。
-
-          不加也能跑，区别只是写配置时全靠记忆，拼错了也不报错 ——
-          Spring 对拼错的配置项是**静默忽略**的，这是最容易浪费半小时的一类问题。
+          配置元数据处理器：编译期扫描 @ConfigurationProperties 类，生成
+          META-INF/spring-configuration-metadata.json，application.yml 里敲
+          "sky.jwt." 时才有提示。
+          不加也能跑，区别是 Spring 对拼错的配置项静默忽略，不报错。
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -356,10 +261,9 @@
         </dependency>
 
         <!--
-          ★ Boot 4 把测试 starter 拆开了。
-          在 Boot 3 里，spring-boot-starter-test 一个就够（它自带 MockMvc 支持）。
-          在 Boot 4 里 MockMvc / @WebMvcTest / TestRestTemplate 被挪到了
-          spring-boot-starter-webmvc-test，不引这个的话 @WebMvcTest 会找不到注解。
+          Boot 4 把 MockMvc / @WebMvcTest / TestRestTemplate 从
+          spring-boot-starter-test 挪到了 spring-boot-starter-webmvc-test，
+          不引这个的话 @WebMvcTest 会找不到注解。
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -1,33 +1,11 @@
-# ============================================================================
-# ChargeOps 通用配置
-# ============================================================================
-# 这个文件里不放任何连接信息（数据库地址、密码、Redis 端口），那些在
-# application-dev.yml / application-prod.yml 里 —— 它们的差异只是「连哪里」，
-# 而下面这些是「应用怎么跑」，跟环境无关。
-#
-# ★ 老库的 application.yml 里有两行必须删掉的配置，这里特意提一下，
-#   因为它们很容易在拷贝时一起带过来：
-#
-#   spring.mvc.pathmatch.matching-strategy: ant_path_matcher
-#       这是给 springfox 打的补丁。springfox 不认识 Spring 5.3 引入的
-#       PathPatternParser，所以老库把整个应用的路径匹配退回旧实现。
-#       springdoc 原生支持 PathPatternParser，不需要这行；
-#       留着它反而会让「拦截器为什么没拦住某个路径」变得难以解释 ——
-#       因为路径匹配的规则悄悄换了一套。
-#
-#   spring.main.allow-circular-references: true
-#       这是循环依赖的止痛药。Boot 2.6 起默认禁止循环依赖，老库靠它绕过。
-#       正确做法是把循环依赖改掉（构造器注入会在启动时直接暴露它，
-#       这是好事，见 JwtTokenAdminInterceptor 的注释），而不是把它允许回去。
-# ============================================================================
+# ChargeOps 通用配置：只放「应用怎么跑」，连接信息在 application-dev.yml / application-prod.yml
 
 server:
   port: 8081
   servlet:
     encoding:
       charset: UTF-8
-      # force=true 让请求和响应都强制用 UTF-8，不依赖客户端有没有声明 charset。
-      # 不加的话，某些客户端发来的中文参数会乱码，而且只在特定工具里复现
+      # 不加的话某些客户端发来的中文参数会乱码，而且只在特定工具里复现
       force: true
 
 spring:
@@ -42,57 +20,10 @@ spring:
       max-file-size: 10MB
       max-request-size: 20MB
 
-  # ==========================================================================
-  # Flyway 数据库迁移
-  # ==========================================================================
-  # 迁移文件在 classpath:db/migration/ 下：V1__init_schema.sql（19 张表）
-  # 和 V2__seed_data.sql（种子数据）。
-  #
-  # ★★ 这些配置是**环境无关**的（dev 和 prod 都要这样跑），所以放在这个文件里，
-  #    而连接信息在 application-dev.yml / application-prod.yml。
-  #
-  # ★★ baseline-on-migrate 是这里唯一真正承重的一行，必须理解它在做什么 ★★
-  #
-  #   它要解决的是「已经存在的库」：那些库是历史脚本建的，表都在，
-  #   但没有 flyway_schema_history 表。Flyway 碰到非空又没有历史表的库会
-  #   <b>直接拒绝启动</b>（"Found non-empty schema(s) but no schema history table"），
-  #   baseline-on-migrate 让它改成为这个库补一条 BASELINE 记录、版本记为
-  #   baseline-version，然后只执行版本号**大于**它的迁移。
-  #
-  #   ★ 于是已有库跳过 V1、执行 V2（V2 是 INSERT IGNORE，对已有种子是空操作）；
-  #     全新库从 V1 开始跑。两条路径都收敛到同一个终态。
-  #
-  #   ★★ 但 baseline 是「相信」，不是「校验」。★★ 已有库会被**假定**成 V1 的样子，
-  #     Flyway 不会去核对它。如果那个库还留着某次手工改表留下的漂移，
-  #     V1 永远不会执行，漂移原封不动地留下来。
-  #     所以引入迁移时要**手工做一次「开发库 vs V1」的比对**，
-  #     否则买到只是「从今往后」的保护。
-  #
-  # ★ validate-on-migrate（默认 true，这里显式写出）：
-  #     把「有人改了已应用的迁移」变成一次启动失败。
-  #     ★ 规则：已应用的迁移永不修改，要改表结构就加 V3__xxx.sql。
-  #
-  # ★ clean-disabled（Flyway 9 起默认 true）：
-  #     clean 会 DROP 掉整个 schema。在一个 baseline 过的开发库上误触发
-  #     等于一把清空所有测试数据。显式写出来是为了让「它被关着」这件事可见 ——
-  #     ★ 也永远不要设 clean-on-validation-error。
-  # ★★ 这里**不能**写成 `spring.flyway:` ★★
-  #
-  #   本文件第 33 行已经是 `spring:`，所以下面这两行是「spring 的 flyway 键」。
-  #   写成 `spring.flyway:` 的话属性名会变成 `spring.spring.flyway.enabled` ——
-  #   Spring 不认识它，**整块配置一条都不生效**，而且不会有任何警告。
-  #
-  #   ★ 这个坑是真的踩过：当时整块都写着 `spring.flyway:`，
-  #     表现是启动直接失败
-  #         Found non-empty schema(s) `chargeops` but no schema history table.
-  #         Use baseline() or set baselineOnMigrate to true
-  #     —— 报错让人以为「baseline-on-migrate 没配对」，而真正的原因是
-  #     **那一行从来没被读到**。`locations` 之所以看着像生效了，
-  #     是因为它的默认值恰好也是 classpath:db/migration。
-  #
-  #   ★ 判断方法：改完启动一次，日志里出现
-  #         Successfully baselined schema with version: 1
-  #     或者 `Schema `chargeops` is up to date` 才算配置真的被读到了。
+  # baseline-on-migrate：给「表都在、但没有 flyway_schema_history」的老库补一条 BASELINE 记录，
+  # 只执行版本号更大的迁移（老库跳 V1 跑 V2），而不是直接拒绝启动。
+  # 它是「相信」不是「校验」，老库的漂移不会被发现，引入迁移时要手工比对一次。
+  # 这几行是 spring 的 flyway 键：写成 `spring.flyway:` 整块配置一条都不生效，且不会有任何警告。
   flyway:
     enabled: true
     baseline-on-migrate: true
@@ -101,270 +32,129 @@ spring:
     clean-disabled: true
     locations: classpath:db/migration
 
-  # ==========================================================================
-  # 定时任务线程池
-  # ==========================================================================
-  # ★ Boot 默认的 ThreadPoolTaskScheduler **只有一个线程**。
-  #   ChargeOpsApplication 的类注释里规划了四个定时任务（待启动订单超时取消、
-  #   设备离线巡检、卡在待结算的订单补偿结算、支付失败兜底扫描）——
-  #   池大小为 1 时它们会互相排队，一个慢任务会推迟所有其它任务，
-  #   而表现只是「某个任务偶尔没跑」，很难联想到是线程池。
+  # Boot 默认的 ThreadPoolTaskScheduler 只有一个线程，四个定时任务会互相排队，
+  # 症状是「某个任务偶尔没跑」。见 ChargeOpsApplication。
   task:
     scheduling:
       pool:
         size: 4
       thread-name-prefix: chargeops-sched-
 
-# ============================================================================
-# MyBatis
-# ============================================================================
 mybatis:
-  # XML 的位置。放在 classpath:mapper/ 下，和 Mapper 接口的包路径（com.chargeops.mapper）
-  # 不一致 —— 这是刻意的：XML 放 resources 下才需要在这里声明位置，
-  # 而且一眼能看出「哪些 Mapper 用了 XML」。
-  #
-  # ★ 另一种做法是把 XML 放在 src/main/java 里和接口同目录（IDEA 的默认习惯），
-  #   但 Maven 默认不会把 src/main/java 下的 .xml 复制到 target/classes，
-  #   需要在 pom 里额外配 <resources> 包含 **/*.xml。
-  #   那是个「不配就静默失效」的配置：启动时 MyBatis 报
-  #   "Invalid bound statement (not found)"，而文件明明就在那。
+  # XML 在 resources/mapper 下，和 Mapper 接口的包路径不一致，所以必须在这里声明位置
   mapper-locations: classpath:mapper/*.xml
 
-  # 让 XML 里的 resultType 可以直接写 Staff，而不用写全限定名
+  # 让 XML 里的 resultType 可以直接写 Staff
   type-aliases-package: com.chargeops.entity
 
   configuration:
-    # ★ 必开。把数据库的 snake_case 列名映射到 Java 的 camelCase 属性名：
-    #   station_id  →  stationId
-    #   create_time →  createTime
-    # 不开的话这些字段全是 null，而且不报错 —— MyBatis 找不到匹配的属性时
-    # 只是静默跳过。表现是「查出来的对象大部分字段是空的」。
+    # 不开的话 snake_case 列名映射不到 camelCase 属性，字段全是 null 且不报错
     map-underscore-to-camel-case: true
 
-    # NULL 值也调用 setter。Map 类型的返回值需要它，实体类其实不需要
-    # （字段默认就是 null）。开着没坏处，但要知道它不是必须的
+    # NULL 值也调用 setter。Map 类型的返回值需要，实体类其实不需要
     call-setters-on-nulls: true
 
-# ============================================================================
-# PageHelper 分页
-# ============================================================================
 pagehelper:
-  # 指明方言。虽然有 auto-dialect 自动识别，但显式声明能省掉一次
-  # 「第一次分页时去读数据库元信息」的开销，也避免识别错误
+  # 显式声明方言，省掉第一次分页时读数据库元信息的开销
   helper-dialect: mysql
 
-  # reasonable=true 会在页码越界时做修正：
-  #   页码 < 1        → 查第一页
-  #   页码 > 总页数   → 查最后一页
-  #
-  # ★ 这是一个有争议的开关，知道两边代价再决定开不开：
-  #   开着 —— 前端传错页码不会白屏，但**请求第 999 页会返回最后几行数据**，
-  #           调用方无法区分「这就是最后一页」和「你要的那页没有」
-  #   关着 —— 越界返回空列表，语义更准确，但前端要自己处理空态
-  # 这里开着是因为后台管理页面的分页组件在删除数据后容易出现页码越界，
-  # 返回空列表会让用户以为「数据都没了」。
+  # 页码越界时修正：页码 > 总页数就返回最后一页。
+  # 代价是「请求第 999 页会返回最后几行」，调用方分不清「这就是最后一页」和「你要的那页没有」；
+  # 开着是因为后台列表删数据后容易页码越界，返回空列表会让用户以为数据都没了
   reasonable: true
 
-  # 允许把 pageNum/pageSize 当作方法参数直接传给 Mapper 方法，
-  # 不用显式调 PageHelper.startPage()。
-  # ★ 本项目**不使用**这个特性，理由见下一条的说明 —— 它会让
-  #   「这一页到底是从哪来的」变得难以追踪
+  # 把 pageNum/pageSize 当方法参数直接传给 Mapper，不用 startPage()。本项目不用。
   support-methods-arguments: false
 
   params:
     pageNum: pageNum
     pageSize: pageSize
 
-# ============================================================================
-# ChargeOps 业务配置
-# ============================================================================
 chargeops:
   jwt:
-    # ------------------------------------------------------------------
-    # ★★ JWT 密钥的硬性要求：UTF-8 编码后 ≥ 32 字节 ★★
-    #
-    # 这是 jjwt 0.12.x 相比 0.9.1 最大的行为变化。新版用
-    # Keys.hmacShaKeyFor() 生成签名密钥，而 HS256 算法要求密钥至少
-    # 256 bit = 32 字节，不够就抛 WeakKeyException。
-    #
-    # 而演示用的默认密钥往往只有 6~7 个字符（一个短单词）——
-    # 那是 jjwt 0.9.1 时代，它对密钥长度没有任何要求。
-    # 把那种配置直接沿用过来，表现是：
-    #   - 应用能正常启动
-    #   - 数据库、Redis 都连得上
-    #   - 只有**调用登录接口的那一刻**才抛异常，而且是 **500 不是 401**
-    # 排查时很容易顺着 500 去看 Service 有没有空指针，
-    # 而真正的原因在一个看起来完全无关的地方：配置项太短。
-    #
-    # JwtUtil 里加了显式的长度校验，就是为了把错误消息
-    # 指向「密钥太短」而不是让它从 jjwt 内部冒出来。
-    #
-    # 下面这两个是**开发环境的假密钥**，写死在文件里是安全的 ——
-    # 它们只能签发本机 dev 环境的 token。生产环境用环境变量覆盖，
-    # 见 application-prod.yml（那里写成没有默认值的 ${...} 占位符，
-    # 忘配就启动失败，而不是偷偷用一个公开在 GitHub 上的密钥）
-    # ------------------------------------------------------------------
+    # 密钥 UTF-8 编码后必须 ≥ 32 字节（HS256 的要求，jjwt 0.12 起不够就抛 WeakKeyException）——
+    # 症状是应用能正常启动、数据库 Redis 都连得上，只有调登录接口那一刻 500。
+    # 两把密钥不能共用：共用的话车主端小程序被逆向、密钥泄露就能签出 staffId=1 的 token 拿管理员权限。
+    # 这两个是开发用假密钥；生产用没有默认值的环境变量，见 application-prod.yml
     admin-secret-key: chargeops-dev-admin-secret-key-not-for-production-use-2026
-    # 2 小时。管理端是内部人员使用，会话短一点更安全；
-    # 而且有 /me 这个探针接口，过期后前端能立刻跳登录页
+    # 2 小时。管理端是内部人员使用
     admin-ttl: 7200000
     admin-token-name: token
 
-    # ★ 车主端用**另一把**密钥，不能和管理端共用。
-    #   共用的话，车主端小程序一旦被逆向、密钥泄露，
-    #   攻击者就能签出一个 staffId=1 的 token 直接拿管理员权限。
-    #   两把密钥把这个影响面隔开了。
     member-secret-key: chargeops-dev-member-secret-key-not-for-production-use-2026
     # 7 天。车主端是小程序，用户不希望在充电站现场被要求重新登录
     member-ttl: 604800000
-    # 车主端从哪个请求头取 token。
-    # 老库沿用小程序模板的习惯用了 authentication 这个名字，
-    # 名字本身无所谓，重要的是**前端和后端必须一致** ——
-    # 不一致的表现是「登录成功了，但下一个请求 401」，而两边都觉得自己是对的
+    # 车主端从哪个请求头取 token。名字本身无所谓，重要的是前端和后端必须一致 ——
+    # 不一致的症状是「登录成功了，但下一个请求 401」，而两边都觉得自己是对的
     member-token-name: authentication
 
   storage:
-    # local —— 写本地磁盘。这是目前**唯一**实现了的选项
-    # ★ 写一个不认识的值不会静默降级，而是启动直接失败并告诉你合法值是什么，
-    #   见 StorageConfiguration 的注释
+    # local 是目前唯一实现了的选项；写不认识的值会启动失败，不会静默降级
     type: local
 
-    # 存储根目录。支持相对路径，但会按**项目根目录**锚定，
-    # 而不是 JVM 的工作目录 —— 后者取决于你怎么启动
-    # （VS Code 点 Run / mvn spring-boot:run / java -jar 是三个不同的目录），
-    # 同一个配置会指向三个地方，而表现只是「图片打不开」。
-    # 详见 LocalFileStorage.resolveAgainstProjectRoot
+    # 相对路径按项目根目录锚定，不是 JVM 的工作目录（点 Run / mvn / java -jar 是三个目录，
+    # 同一个配置指向三个地方，表现只是「图片打不开」）。见 LocalFileStorage
     local-dir: ./data/upload
 
-    # 拼在返回 URL 前面的部分
-    # ★ 这个值会被写进数据库（站点图片列存的就是完整 URL），
-    #   所以换域名/换端口时光改这里不够，历史数据里的旧 URL 也得一起刷。
-    #   这是「把可变的环境信息固化进业务数据」的典型代价
+    # 拼在返回 URL 前面的部分。这个值会被写进数据库（站点图片列存的是完整 URL），
+    # 换域名/换端口时光改这里不够，历史数据里的旧 URL 也得一起刷
     url-prefix: http://localhost:8081
 
-    # 本地上传文件的访问路径前缀。
-    # 它同时被 LocalFileStorage（拼 URL）和 WebMvcConfiguration（注册静态资源映射）
-    # 使用，必须一致，所以抽出来放配置里。
-    # ★ 不要配成 /api 开头 —— 那个前缀被 JWT 拦截器盯着，
-    #   图片会变成「必须登录才能看」，而静态资源请求不会带 token，
-    #   结果是图片全部裂掉，且日志里一条报错都没有
+    # 同时被 LocalFileStorage（拼 URL）和 WebMvcConfiguration（注册静态资源映射）使用，必须一致。
+    # 不要配成 /api 开头 —— 那个前缀被 JWT 拦截器盯着，图片会全部裂掉且日志里一条报错都没有
     url-path: /img
 
-  # ==========================================================================
-  # 定时任务
-  # ==========================================================================
-  # ★ 每个任务的**开关**（chargeops.scheduling.enabled）在
-  #   application-dev.yml / application-prod.yml 里，不在这里 ——
-  #   因为这里放的是『多久扫一次』这种业务参数，而『这个环境跑不跑任务』
-  #   是环境属性。（测试环境靠 src/test/resources/application.properties 关掉。）
   scheduled:
-    # 支付失败兜底扫描：多久扫一次，以及「待支付多久算超时」
+    # 这里放「多久扫一次」这类业务参数；「这个环境跑不跑任务」的开关在
+    # application-dev.yml / application-prod.yml
     #
-    # ★ 用 fixedDelay 而不是 cron：fixedDelay 保证**上一次跑完之后**再等这么久，
-    #   一次慢扫描不会和自己重叠。cron 是「到点就跑」，扫描耗时超过间隔时
-    #   同一个任务会并发地跑起来 —— 而这个任务是会写数据库的。
+    # 用 fixedDelay 而不是 cron：保证上一次跑完之后再等这么久，慢扫描不会和自己重叠
     pay-timeout-scan-ms: 300000
 
-    # ★ 这个值决定「用户有多久可以慢慢去充值」，必须远大于任何合理的思考时间。
-    #   扫早了的后果不是「提醒用户」，而是把这笔订单打成 6 支付失败 ——
-    #   虽然 6 仍然可以支付（markPaid 同时接受 4 和 6），但会在订单上留下
-    #   一次本不该有的失败记录，用户看到的是「我还没付款它就失败了」。
-    #   15 分钟：超过这个时间的待支付订单，几乎都不是「正在操作」。
+    # 决定用户有多久可以慢慢去充值。扫早了的后果不是提醒用户，而是把这笔订单打成 6 支付失败 ——
+    # 6 仍然可以支付，但订单上会留下一次本不该有的失败记录
     pay-timeout-minutes: 15
 
-    # 单次扫描最多处理多少笔。★ 有上限是必要的：一次把几千笔待支付订单
-    # 全捞进内存、逐笔开事务去写，会在数据库上形成一个长尾，
-    # 而扫描本身是固定间隔重复的，剩下的下一轮会处理掉。
+    # 单次扫描最多处理多少笔，避免一次把几千笔待支付订单全捞进内存逐笔开事务
     pay-timeout-batch-size: 200
 
-    # --------------------------------------------------------------------------
-    # 权益过期落库（MemberPackageExpireJob）
-    # --------------------------------------------------------------------------
-    # 把 status 还停在 1 生效中、但 expire_time 已经过去的权益改成 3 已过期。
-    #
-    # ★ 它和上面的支付扫描的紧迫性完全不同，所以间隔可以（也应该）宽松得多：
-    #   没有任何人在等它 —— 读路径本来就带 expire_time > now 兜底，
-    #   一份状态陈旧的过期权益照样不会被发出去。
-    #   它的意义是让「运营看到的过期数量」和「车主看到的灰态」正确。
-    #
-    #   30 分钟：比支付扫描慢 6 倍，但仍然快到「用户点开列表时status是对的」。
-    #   改大到几小时也不会出错，只是运营的统计会滞后。
+    # 权益过期落库（MemberPackageExpireJob）：把 status 还停在 1、但 expire_time 已过的改成 3。
+    # 读路径本来就带 expire_time > now 兜底，它只是让运营统计和车主看到的灰态正确
     package-expire-scan-ms: 1800000
 
-    # 单轮最多落库多少份。★ 这是**一条 UPDATE ... LIMIT n**，不是逐笔开事务，
-    #   所以它不占堆内存，占的是行锁和 undo log —— 取值可以远大于上面的 200。
-    #   第一次上线时库里可能躺着两年的过期数据（在 V3 之前，
-    #   没有任何代码写过 status = 3），收敛速度直接取决于这个数。
+    # 这是一条 UPDATE ... LIMIT n，不占堆内存、占的是行锁和 undo log，取值可以远大于上面那个
     package-expire-batch-size: 5000
 
-# ============================================================================
-# 接口文档（springdoc）
-# ============================================================================
 springdoc:
   swagger-ui:
-    # Swagger UI 页面地址：http://localhost:8081/swagger-ui/index.html
+    # http://localhost:8081/swagger-ui/index.html
     path: /swagger-ui.html
-    # 按接口路径字母序排列，而不是按 Controller 声明顺序。
-    # 接口多了之后，固定顺序比「新加的排最后」更容易找到目标
+    # 按路径字母序排列，接口多了之后比「新加的排最后」更容易找到目标
     operations-sorter: alpha
     tags-sorter: alpha
   api-docs:
-    # OpenAPI JSON：http://localhost:8081/v3/api-docs
-    # ★ 验收时**先访问这个**。它是纯 JSON，不依赖任何前端静态资源：
-    #   有 JSON → 文档数据本身是好的，此时 UI 打不开就说明问题在静态资源上
-    #   没 JSON → springdoc 根本没生效，方向完全不同
-    #   先看它能把这两类问题分开，省掉大量瞎猜
+    # 纯 JSON，不依赖任何前端静态资源：验收时先访问它，能把「文档数据有问题」和
+    # 「UI 静态资源有问题」分开
     path: /v3/api-docs
 
-# ============================================================================
-# 可观测性
-# ============================================================================
 management:
   endpoints:
     web:
       exposure:
-        # 只暴露 health 和 info。★ 不要图省事写 "*" ——
-        # /actuator/env 会把所有配置项（含数据库密码、JWT 密钥）返回出来，
-        # /actuator/heapdump 能下载整个堆内存快照。
-        # 这两个端点在生产环境的泄露后果比大多数人以为的严重得多
+        # 不要写 "*"：/actuator/env 会返回数据库密码、JWT 密钥，/actuator/heapdump 能下载整个堆
         include: health,info,metrics
   endpoint:
     health:
-      # ★★ 这里**刻意不写** show-details ★★
-      #
-      # 它是「把数据库、Redis 的连通状态和版本一起显示出来」的开关，
-      # 开发时价值很高 —— 一眼能看出「是数据库没起来还是代码有问题」，
-      # 比翻启动日志快得多。所以它开在 application-dev.yml 里。
-      #
-      # 而这个文件是**环境无关**的：写在这里的每一行在 dev 和 prod 都会生效。
-      # show-details: always 在生产环境的后果是 /actuator/health
-      # （一个通常不需要认证、还可能被探针和外部监控扫到的端点）
-      # 会吐出数据库版本、Redis 版本、磁盘路径这类信息 ——
-      # 对攻击者来说这是一份免费的指纹清单。
-      #
-      # 默认值就是 never，所以这里什么都不写才是正确的生产形态。
-      # ★ 判断一条配置该放哪层，标准只有一个：
-      #   「它在生产环境也成立吗？」不成立就属于 dev 文件。
+      # 默认值就是 never，所以这里什么都不写才是正确的生产形态。本文件环境无关：
+      # show-details: always 写在这里等于生产环境也生效，/actuator/health 会吐出
+      # 数据库版本、Redis 版本、磁盘路径。它开在 application-dev.yml 里。
 
-# ============================================================================
-# 日志
-# ============================================================================
+# logging.level.com.chargeops 同理在 application-dev.yml，本文件不写。
+
 logging:
   level:
-    # ★ root 保持 info：这是生产环境该有的级别，而且它是**兜底**，
-    #   下面那些按包名开的级别都是在这个基础上做减法之外的加法。
+    # 兜底级别，按包名开的级别都是在它之上做加法
     root: info
-    # ★★ 这里**刻意不写** com.chargeops: debug ★★
-    #
-    # 同一个道理：它是环境无关文件，写在这里等于生产环境也全量 debug。
-    # 结果是日志量涨一到两个数量级（每个请求、每次缓存命中都打一行），
-    # 既冲掉真正的错误，也把日志存储成本推上去。
-    #
-    # 它在 application-dev.yml 里，而且那里开的是
-    # com.chargeops.mapper: debug（精确到 Mapper 包）而不是整个 com.chargeops ——
-    # 理由见那个文件里对应的注释。
   pattern:
-    # 加上时间戳和线程名。默认格式没有线程名，
-    # 而排查 ThreadLocal 相关的 bug（BaseContext 没清理导致串号）
-    # 必须能看到「同一个线程处理了两个请求」
+    # 默认格式没有线程名，而排查 BaseContext 没清理导致的串号必须能看到「同一个线程处理了两个请求」
     console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
