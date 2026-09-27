@@ -1,0 +1,220 @@
+/**
+ * Element Plus 主题覆盖 —— **纯 CSS 变量，不引 sass**。
+ *
+ * ★★ 最关键的一条：EP 的 `--el-color-primary-light-N` / `dark-2`
+ *   是**预计算好的 rgb 常量**，不会随 `--el-color-primary` 自动重算。★★
+ *
+ *   只改主色的话会出现：主色变了，但 hover 底色、`plain` 按钮、
+ *   `disabled` 状态**还是默认的蓝**。这种「改了一半」最难发现 ——
+ *   因为静态截图里主色是对的，只有交互时才露出来。
+ *
+ *   → 所以 `light-3/5/7/8/9` 与 `dark-2` 必须**一起现算**。
+ *
+ *   公式照 EP 的 SCSS：`light-N = mix(N×10% 白, 主色)`，`dark-2 = mix(20% 黑, 主色)`。
+ *   用 CSS `color-mix` 表达（Chrome 111+ / Safari 16.2+，内部后台可接受）。
+ *
+ * ★ 为什么不走 SCSS 的 `@forward ... with ($colors: ...)`：
+ *   那会引入 sass 依赖、每次冷启动编译整包 theme-chalk，
+ *   而且和 `tokens.css` 形成**两套真源**。要调的东西 EP 已全部暴露为变量，
+ *   只有主色阶一处需要手写 —— 不值得为它换回整个构建成本。
+ */
+
+:root {
+  /* ── 主色及其派生档（现算）─────────────────────────────────────────── */
+  --el-color-primary: var(--co-primary);
+  --el-color-primary-light-3: color-mix(in srgb, var(--co-primary) 70%, #fff);
+  --el-color-primary-light-5: color-mix(in srgb, var(--co-primary) 50%, #fff);
+  --el-color-primary-light-7: color-mix(in srgb, var(--co-primary) 30%, #fff);
+  --el-color-primary-light-8: color-mix(in srgb, var(--co-primary) 20%, #fff);
+  --el-color-primary-light-9: color-mix(in srgb, var(--co-primary) 10%, #fff);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--co-primary) 80%, #000);
+
+  /**
+   * ★ 语义色也要覆盖，否则 `el-tag` / `el-alert` 的浅底会和自研
+   *   `StatusTag` 的浅底**对不上**（EP 默认的绿是 #67C23A，
+   *   而我们的 --co-success 是 #00B42A —— 两个绿并排一眼就能看出来）。
+   */
+  --el-color-success: var(--co-success);
+  --el-color-success-light-3: color-mix(in srgb, var(--co-success) 70%, #fff);
+  --el-color-success-light-5: color-mix(in srgb, var(--co-success) 50%, #fff);
+  --el-color-success-light-7: color-mix(in srgb, var(--co-success) 30%, #fff);
+  --el-color-success-light-8: color-mix(in srgb, var(--co-success) 20%, #fff);
+  --el-color-success-light-9: var(--co-success-weak);
+  --el-color-success-dark-2: var(--co-success-strong);
+
+  --el-color-warning: var(--co-warning);
+  --el-color-warning-light-3: color-mix(in srgb, var(--co-warning) 70%, #fff);
+  --el-color-warning-light-5: color-mix(in srgb, var(--co-warning) 50%, #fff);
+  --el-color-warning-light-7: color-mix(in srgb, var(--co-warning) 30%, #fff);
+  --el-color-warning-light-8: color-mix(in srgb, var(--co-warning) 20%, #fff);
+  --el-color-warning-light-9: var(--co-warning-weak);
+  --el-color-warning-dark-2: var(--co-warning-strong);
+
+  --el-color-danger: var(--co-danger);
+  --el-color-danger-light-3: color-mix(in srgb, var(--co-danger) 70%, #fff);
+  --el-color-danger-light-5: color-mix(in srgb, var(--co-danger) 50%, #fff);
+  --el-color-danger-light-7: color-mix(in srgb, var(--co-danger) 30%, #fff);
+  --el-color-danger-light-8: color-mix(in srgb, var(--co-danger) 20%, #fff);
+  --el-color-danger-light-9: var(--co-danger-weak);
+  --el-color-danger-dark-2: var(--co-danger-strong);
+
+  /* `error` 是 EP 对 danger 的别名，漏了它 el-form 的校验红不变 */
+  --el-color-error: var(--co-danger);
+  --el-color-error-light-3: color-mix(in srgb, var(--co-danger) 70%, #fff);
+  --el-color-error-light-5: color-mix(in srgb, var(--co-danger) 50%, #fff);
+  --el-color-error-light-7: color-mix(in srgb, var(--co-danger) 30%, #fff);
+  --el-color-error-light-8: color-mix(in srgb, var(--co-danger) 20%, #fff);
+  --el-color-error-light-9: var(--co-danger-weak);
+  --el-color-error-dark-2: var(--co-danger-strong);
+
+  --el-color-info: var(--co-info);
+  --el-color-info-light-3: color-mix(in srgb, var(--co-info) 70%, #fff);
+  --el-color-info-light-5: color-mix(in srgb, var(--co-info) 50%, #fff);
+  --el-color-info-light-7: color-mix(in srgb, var(--co-info) 30%, #fff);
+  --el-color-info-light-8: color-mix(in srgb, var(--co-info) 20%, #fff);
+  --el-color-info-light-9: var(--co-info-weak);
+  --el-color-info-dark-2: var(--co-info-strong);
+
+  /* ── 文本 ─────────────────────────────────────────────────────────────── */
+  --el-text-color-primary: var(--co-text-1);
+  --el-text-color-regular: var(--co-text-2);
+  --el-text-color-secondary: var(--co-text-3);
+  --el-text-color-placeholder: var(--co-text-3);
+  --el-text-color-disabled: var(--co-text-4);
+
+  /* ── 背景与边框 ───────────────────────────────────────────────────────── */
+  --el-bg-color: var(--co-bg-card);
+  --el-bg-color-page: var(--co-bg-page);
+  --el-bg-color-overlay: var(--co-bg-card);
+  --el-border-color: var(--co-border);
+  --el-border-color-light: var(--co-border-light);
+  --el-border-color-lighter: var(--co-border-light);
+  --el-border-color-extra-light: var(--co-border-light);
+
+  /* ── 形状 ─────────────────────────────────────────────────────────────── */
+  /* ★ 6px：比 EP 默认的 4px 略圆，是「精致」和「不娘」之间的那个点 */
+  --el-border-radius-base: var(--co-radius-md);
+  --el-border-radius-small: var(--co-radius-sm);
+  --el-border-radius-round: 999px;
+
+  /* ── 阴影 ─────────────────────────────────────────────────────────────── */
+  --el-box-shadow-light: var(--co-shadow-sm);
+  --el-box-shadow: var(--co-shadow-md);
+  --el-box-shadow-dark: var(--co-shadow-lg);
+
+  /* ── 字体 ─────────────────────────────────────────────────────────────── */
+  --el-font-size-base: var(--co-font-md);
+}
+
+/* ── 表格：密度与层次 ──────────────────────────────────────────────────── */
+
+/* 表头用极浅灰而不是纯白 —— 让表头和数据行有一层几乎察觉不到的分隔，
+   比加一条深色边框「精致」，也是后台表格看起来专业的关键细节之一。 */
+.el-table th.el-table__cell {
+  background-color: var(--co-bg-2) !important;
+  color: var(--co-text-2);
+  font-weight: 500;
+}
+
+/* 行分割线用最浅的那档，不用 EP 默认的灰色实线 */
+.el-table td.el-table__cell,
+.el-table th.el-table__cell.is-leaf {
+  border-bottom-color: var(--co-border-light);
+}
+
+/* hover 行：极浅的品牌色底，暗示「这行可点」 */
+.el-table tbody tr:hover > td.el-table__cell {
+  background-color: var(--co-primary-weak) !important;
+}
+
+/* 去掉表格底部那条多余的分隔线（它和外层卡片边框重叠，会显得很脏） */
+.el-table::before {
+  display: none;
+}
+
+/* ── 卡片 / 弹窗 ───────────────────────────────────────────────────────── */
+
+.el-card {
+  border-color: var(--co-border);
+  box-shadow: var(--co-shadow-sm) !important;
+}
+
+.el-dialog {
+  border-radius: var(--co-radius-xl);
+}
+
+.el-dialog__header {
+  margin-right: 0;
+  padding-bottom: var(--co-gap-lg);
+  border-bottom: 1px solid var(--co-border-light);
+}
+
+.el-dialog__footer {
+  padding-top: var(--co-gap-lg);
+  border-top: 1px solid var(--co-border-light);
+}
+
+/* ── 分页：右对齐，去掉多余留白 ────────────────────────────────────────── */
+.el-pagination {
+  justify-content: flex-end;
+  padding: var(--co-gap-lg) 0 0;
+}
+
+/* ── 按钮：hover 不用 EP 默认的浅蓝底（和我们的 weak 不一致）────────────── */
+.el-button--primary:not(.is-disabled):hover {
+  background-color: var(--co-primary-hover);
+  border-color: var(--co-primary-hover);
+}
+
+.el-button--primary:not(.is-disabled):active {
+  background-color: var(--co-primary-active);
+  border-color: var(--co-primary-active);
+}
+
+/**
+ * ★ 危险操作（退款、作废、调账）一律用 `plain` 而不是实心红。
+ *   实心红按钮太抢眼，一屏里出现两个就会让整个页面显得「危险」；
+ *   而确认动作已经由二次确认弹窗承担了。
+ */
+.el-button--danger.is-plain {
+  background: var(--co-danger-weak);
+  border-color: color-mix(in srgb, var(--co-danger) 30%, #fff);
+  color: var(--co-danger);
+}
+
+/* ── 表单 ─────────────────────────────────────────────────────────────── */
+
+/* 输入框聚焦时不要 EP 默认的那圈深色阴影，用品牌色的细描边 */
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--co-primary) inset !important;
+}
+
+/* 必填星号用危险色，但不要太大 */
+.el-form-item.is-required .el-form-item__label::before {
+  color: var(--co-danger);
+}
+
+/* ── 空状态 ───────────────────────────────────────────────────────────── */
+.el-empty__description {
+  color: var(--co-text-3);
+}
+
+/* ── 滚动条：细一点，别破坏整体观感 ───────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--co-border);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--co-text-4);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

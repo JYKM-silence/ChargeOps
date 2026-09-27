@@ -1,0 +1,21 @@
+{
+  "name": "@chargeops/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ChargeOps 两端共用的纯 TS 层：HTTP 客户端、接口类型、字典、领域规则、Mock",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "axios": "1.20.0",
+    "msw": "2.15.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

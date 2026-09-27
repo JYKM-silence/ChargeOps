@@ -1,0 +1,194 @@
+/**
+ * 设计令牌 —— 两端**共用同一份**，是颜色/圆角/阴影的唯一真源。
+ *
+ * ★ 组件里**不要出现任何裸色值**（`#0B5FFF`、`white`、`#eee`）。
+ *   一旦出现，改主题时就会漏掉它，页面会出现「一个颜色略微不同的角落」——
+ *   这种不一致很显眼（尤其是深浅两种背景交界处），但极难定位。
+ *
+ * ★ 「不廉价」的几条抓手，都体现在下面的取值里：
+ *   1. 底色与白卡片之间用**极弱阴影 + 1px 浅描边**建立层次，
+ *      不要纯投影（发灰），也不要纯描边（发平）。
+ *   2. 侧边栏用 `#1F2733` 而不是纯黑 —— 纯黑在浅色主题里会显得割裂。
+ *   3. 状态标签用**浅底 + 同色深字**，不用纯色填充。
+ *      一屏纯色块是「廉价感」最主要的来源。
+ *   4. 圆角只有 4 档，**不许混用**；阴影只有 3 档。
+ */
+
+:root {
+  /* ── 品牌色 ──────────────────────────────────────────────────────────── */
+  --co-primary: #0b5fff;
+  --co-primary-hover: #2f77ff;
+  --co-primary-active: #0848cc;
+  /* 浅底色：用于选中行、标签底、hover 背景 */
+  --co-primary-weak: #e8f0ff;
+  /* 同色深字：浅底上的文字，保证对比度够 */
+  --co-primary-strong: #0848cc;
+
+  /* ── 中性色 ──────────────────────────────────────────────────────────── */
+  --co-bg-page: #f5f7fa; /* 页面底 */
+  --co-bg-card: #ffffff; /* 卡片 */
+  --co-bg-2: #fafbfc; /* 表头、次级区块 */
+  --co-bg-3: #f2f4f7; /* hover 行 */
+  --co-border: #e5e9f0; /* 常规边框 */
+  --co-border-light: #eff2f7; /* 分割线（比边框更浅，用于表格行） */
+
+  /* ── 文本 ────────────────────────────────────────────────────────────── */
+  --co-text-1: #1d2129; /* 主要文字、金额 */
+  --co-text-2: #4e5969; /* 次要文字、标签 */
+  --co-text-3: #86909c; /* 辅助文字、占位符 */
+  --co-text-4: #c9cdd4; /* 禁用态、无效图标 */
+
+  /* ── 侧边栏（管理端）────────────────────────────────────────────────── */
+  --co-sidebar-bg: #1f2733; /* ★ 不是纯黑 */
+  --co-sidebar-text: #a9b4c4; /* 次级字 */
+  --co-sidebar-text-active: #ffffff;
+  --co-sidebar-active-bg: rgba(11, 95, 255, 0.16);
+  --co-sidebar-hover-bg: rgba(255, 255, 255, 0.06);
+  --co-sidebar-divider: rgba(255, 255, 255, 0.08);
+
+  /* ── 语义色 ──────────────────────────────────────────────────────────── */
+  --co-success: #00b42a;
+  --co-success-weak: #e8ffea;
+  --co-success-strong: #007d1e;
+
+  --co-warning: #ff7d00;
+  --co-warning-weak: #fff7e8;
+  --co-warning-strong: #b85c00;
+
+  --co-danger: #f53f3f;
+  --co-danger-weak: #ffece8;
+  --co-danger-strong: #b32424;
+
+  --co-info: #86909c;
+  --co-info-weak: #f2f3f5;
+  --co-info-strong: #4e5969;
+
+  --co-accent: #7b61ff;
+  --co-accent-weak: #f0edff;
+  --co-accent-strong: #5638d6;
+
+  /* ── 时段色（尖峰平谷）★ 独立一组，**不复用状态色** ──────────────────── */
+  --co-period-sharp: #f53f3f; /* 尖峰 */
+  --co-period-sharp-weak: #ffece8;
+  --co-period-sharp-strong: #b32424;
+
+  --co-period-peak: #ff7d00; /* 高峰 */
+  --co-period-peak-weak: #fff7e8;
+  --co-period-peak-strong: #b85c00;
+
+  --co-period-flat: #0b5fff; /* 平段 ★ 不是灰色：灰在图表里会被读成「无数据」 */
+  --co-period-flat-weak: #e8f0ff;
+  --co-period-flat-strong: #0848cc;
+
+  --co-period-valley: #00b42a; /* 低谷 */
+  --co-period-valley-weak: #e8ffea;
+  --co-period-valley-strong: #007d1e;
+
+  /* ── 圆角：只有 4 档，不许混用 ───────────────────────────────────────── */
+  --co-radius-sm: 4px; /* 标签、小按钮 */
+  --co-radius-md: 6px; /* 按钮、输入框 */
+  --co-radius-lg: 10px; /* 卡片 */
+  --co-radius-xl: 14px; /* 大面板、弹窗 */
+
+  /* ── 阴影：只有 3 档 ─────────────────────────────────────────────────── */
+  /* ★ 第 1 档刻意做得极弱 —— 配合 1px 描边建立层次，而不是靠投影 */
+  --co-shadow-sm: 0 1px 2px rgba(29, 33, 41, 0.04), 0 4px 12px rgba(29, 33, 41, 0.04);
+  --co-shadow-md: 0 2px 8px rgba(29, 33, 41, 0.08), 0 8px 24px rgba(29, 33, 41, 0.06);
+  --co-shadow-lg: 0 8px 32px rgba(29, 33, 41, 0.12), 0 2px 8px rgba(29, 33, 41, 0.08);
+
+  /* ── 间距（8 的倍数为主，允许 4 的奇数倍做微调）─────────────────────── */
+  --co-gap-xs: 4px;
+  --co-gap-sm: 8px;
+  --co-gap-md: 12px;
+  --co-gap-lg: 16px;
+  --co-gap-xl: 24px;
+  --co-gap-2xl: 32px;
+
+  /* ── 字号 ────────────────────────────────────────────────────────────── */
+  --co-font-xs: 12px;
+  --co-font-sm: 13px;
+  --co-font-md: 14px;
+  --co-font-lg: 16px;
+  --co-font-xl: 20px;
+  --co-font-2xl: 24px;
+  /* ★ 金额专用：比正文大且用等宽数字，两个金额上下对齐时不会跳 */
+  --co-font-money: 28px;
+
+  /* ── 动效 ────────────────────────────────────────────────────────────── */
+  --co-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --co-duration-fast: 0.15s;
+  --co-duration: 0.25s;
+}
+
+/**
+ * 数字对齐。
+ *
+ * ★★ 所有金额 / 电量 / 时间都**必须**加这个类。★★
+ *   默认字体的数字是**比例宽度**（`1` 比 `8` 窄），于是列表里
+ *   一列金额会出现「小数点在跳动」的观感 —— 单看每一行都正常，
+ *   整列看过去就是歪的，这是「廉价感」最容易被忽略的来源之一。
+ *   `tabular-nums` 让所有数字等宽，小数点自然对齐。
+ */
+.co-num,
+.co-money {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/** 金额：右对齐 + 等宽。列表里的金额列统一用它。 */
+.co-money {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ── 通用工具类（两端共用，保持极少量）────────────────────────────────── */
+
+.co-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.co-card {
+  background: var(--co-bg-card);
+  border: 1px solid var(--co-border);
+  border-radius: var(--co-radius-lg);
+  box-shadow: var(--co-shadow-sm);
+}
+
+/**
+ * 呼吸圆点 —— **全项目只有「充电中」用它**。
+ *
+ * ★ 动效是稀缺资源。如果每个状态都动，就没有东西能表示「这个正在变化」了。
+ */
+.co-pulse-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: co-pulse 1.6s var(--co-ease) infinite;
+}
+
+@keyframes co-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+
+/** 尊重系统的「减少动态效果」设置 —— 无障碍要求，也避免有人被闪到。 */
+@media (prefers-reduced-motion: reduce) {
+  .co-pulse-dot {
+    animation: none;
+  }
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

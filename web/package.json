@@ -1,0 +1,23 @@
+{
+  "name": "chargeops-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ChargeOps 前端工程：管理端后台 + 车主端 H5（pnpm workspace）",
+  "type": "module",
+  "scripts": {
+    "dev:admin": "pnpm --filter @chargeops/admin dev",
+    "dev:h5": "pnpm --filter @chargeops/h5 dev",
+    "dev:admin:mock": "pnpm --filter @chargeops/admin dev:mock",
+    "dev:h5:mock": "pnpm --filter @chargeops/h5 dev:mock",
+    "build": "pnpm -r build",
+    "build:admin": "pnpm --filter @chargeops/admin build",
+    "build:h5": "pnpm --filter @chargeops/h5 build",
+    "preview:admin": "pnpm --filter @chargeops/admin preview",
+    "preview:h5": "pnpm --filter @chargeops/h5 preview",
+    "typecheck": "pnpm -r typecheck",
+    "mock:init": "pnpm --filter @chargeops/admin exec msw init public --save && pnpm --filter @chargeops/h5 exec msw init public --save"
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
+}

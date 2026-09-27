@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- ★ H5 必须锁死视口：不写 `viewport-fit=cover` 的话 iPhone 的
+         安全区（刘海/底部小黑条）会盖住 Tabbar；不写 `maximum-scale`
+         则 iOS 上输入框聚焦时会自动放大人整个页面，用户要手动缩回去。 -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0B5FFF" />
+    <meta name="format-detection" content="telephone=no" />
+    <title>ChargeOps 充电</title>
+    <style>
+      /* 首屏骨架：JS 加载前先铺底色。
+         ★ 与 admin 同理 —— 不铺的话从白屏切到应用会闪一下纯白，
+           而页面底色是 #F5F7FA，那一下很明显。 */
+      html,
+      body,
+      #app {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: #f5f7fa;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+          'Microsoft YaHei', sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        /* ★ 关掉「长按选中 / 双击放大」：H5 是应用不是文档，
+           滚动列表时长按弹系统菜单很出戏。输入框单独放开（见 vant-overrides）。 */
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

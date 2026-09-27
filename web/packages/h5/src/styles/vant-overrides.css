@@ -1,0 +1,183 @@
+/**
+ * Vant 4 主题覆盖。
+ *
+ * ★★ 为什么这个文件比管理端的 `element-overrides.css` 短得多 ★★
+ *
+ *   已核实：**`vant@4.10.2` 的产物里 SCSS 文件数为 0**（`ls node_modules/vant`
+ *   只有 `es/` 与 `lib/`，没有 `scss/`）。网上大量「Vant 主题定制用
+ *   `@forward ... with ($primary-color: ...)`」的资料是 **Vant 2 / 3** 的，
+ *   直接搬过来会卡在「找不到文件」上。
+ *
+ *   Vant 4 把主题完全做成了 **CSS 变量**，而且**没有 `-light-N` 色阶** ——
+ *   组件内部直接引用 `--van-primary-color` 这类变量。所以：
+ *
+ *     · Element Plus：改一个主色要**同时重算 5 档派生色**（因为它的
+ *       `light-3/5/7/8/9` 是预计算的 rgb 常量）
+ *     · Vant 4：改一个 `--van-primary-color` **全站生效**
+ *
+ *   → 这就是本文件短的原因，不是偷懒。
+ *
+ * ★ 但 Vant 默认观感偏「工具化」（圆角小、灰阶重、字号密），
+ *   所以精致化不能只靠变量，靠的是**自研招牌组件**：
+ *   充电进度环、余额卡、站点卡、`van-cell-group inset` + 自定义圆角细阴影。
+ *   这里只做「让 Vant 的底子和我们的设计令牌对齐」这一层。
+ */
+
+/* ══ 品牌色 ═══════════════════════════════════════════════════════════════
+   ★ 只覆盖 Vant 存在的那几个变量，**不要**凭空造 `--van-primary-light-3`：
+     Vant 4 不读它，写了也没用（这和 EP 恰好相反，很容易写反）。 */
+:root {
+  --van-primary-color: var(--co-primary);
+  --van-success-color: var(--co-success);
+  --van-danger-color: var(--co-danger);
+  --van-warning-color: var(--co-warning);
+
+  /* ══ 文字 ═══════════════════════════════════════════════════════════
+     ★ Vant 默认的 `--van-text-color-2/3` 偏黑，导致「次要信息」看起来
+       和主信息一样重，整页没有层次。这里换成我们的四级灰。 */
+  --van-text-color: var(--co-text-1);
+  --van-text-color-2: var(--co-text-2);
+  --van-text-color-3: var(--co-text-3);
+  --van-text-color-4: var(--co-text-4);
+
+  /* ══ 背景 / 边框 ════════════════════════════════════════════════════ */
+  --van-background: var(--co-bg-page);
+  --van-background-2: var(--co-bg-card);
+  --van-background-3: var(--co-bg-card);
+  --van-border-color: var(--co-border);
+  /* ★ Vant 的默认分割线是 #ebedf0，比我们的 --co-border-light 重，
+     列表看起来像表格。换成更浅的一档。 */
+  --van-cell-border-color: var(--co-border-light);
+  --van-cell-group-inset-padding: 12px;
+
+  /* ══ 形状：统一到我们的圆角体系 ═════════════════════════════════════
+     ★ 这是「不廉价」最省力的一处：Vant 默认圆角偏小（2px/4px），
+       整体看起来像 2016 年的页面。 */
+  --van-radius-sm: var(--co-radius-sm);
+  --van-radius-md: var(--co-radius-md);
+  --van-radius-lg: var(--co-radius-lg);
+  --van-radius-max: 999px;
+
+  /* ══ NavBar ═════════════════════════════════════════════════════════ */
+  --van-nav-bar-height: 46px;
+  --van-nav-bar-background: var(--co-bg-card);
+  --van-nav-bar-title-text-color: var(--co-text-1);
+  --van-nav-bar-icon-color: var(--co-text-1);
+  --van-nav-bar-text-color: var(--co-primary);
+
+  /* ══ Tabbar ═════════════════════════════════════════════════════════ */
+  --van-tabbar-height: 52px;
+  --van-tabbar-background: var(--co-bg-card);
+  --van-tabbar-item-font-size: 11px;
+  --van-tabbar-item-active-color: var(--co-primary);
+  --van-tabbar-item-text-color: var(--co-text-3);
+
+  /* ══ Cell ═══════════════════════════════════════════════════════════
+     ★ 行高从 44 提到 48：H5 上 44px 的可点区域在手指下偏小，
+       而且我们的 cell 大多带第二行说明。 */
+  --van-cell-vertical-padding: 12px;
+  --van-cell-horizontal-padding: 14px;
+  --van-cell-font-size: 14px;
+  --van-cell-line-height: 22px;
+  --van-cell-value-color: var(--co-text-2);
+
+  /* ══ Button ═════════════════════════════════════════════════════════ */
+  --van-button-default-height: 44px;
+  --van-button-normal-font-size: 14px;
+  --van-button-primary-background: var(--co-primary);
+  --van-button-primary-border-color: var(--co-primary);
+  --van-button-border-radius: var(--co-radius-md);
+
+  /* ══ 输入 / 表单 ════════════════════════════════════════════════════ */
+  --van-field-label-color: var(--co-text-2);
+  --van-field-input-text-color: var(--co-text-1);
+  --van-field-placeholder-text-color: var(--co-text-4);
+  --van-field-error-message-color: var(--co-danger);
+
+  /* ══ 弹层 / 对话框 ══════════════════════════════════════════════════ */
+  --van-dialog-border-radius: var(--co-radius-lg);
+  --van-popup-round-radius: var(--co-radius-lg);
+  --van-overlay-background: rgba(29, 33, 41, 0.55);
+
+  /* ══ Toast / 轻提示 ═════════════════════════════════════════════════
+     ★ 加圆角和内边距，默认的方块黑底在浅色页面上很突兀。 */
+  --van-toast-radius: var(--co-radius-md);
+  --van-toast-background: rgba(29, 33, 41, 0.88);
+
+  /* ══ 标签 / 徽标 ════════════════════════════════════════════════════ */
+  --van-tag-radius: 3px;
+  --van-badge-background: var(--co-danger);
+
+  /* ══ 列表 / 加载 ════════════════════════════════════════════════════ */
+  --van-loading-spinner-color: var(--co-primary);
+  --van-pull-refresh-head-text-color: var(--co-text-3);
+
+  /* ══ 步进器 / 数字键盘 ══════════════════════════════════════════════ */
+  --van-stepper-button-icon-color: var(--co-text-1);
+  --van-stepper-background: var(--co-bg-3);
+}
+
+/* ══ 几处变量改不到的地方，只能写选择器 ═══════════════════════════════════ */
+
+/* ★ 输入框要放开「长按选中 / 复制」：全局 `user-select: none`（见 index.html）
+     会让用户**没法复制自己的订单号**，而订单号正是他最需要复制给客服的东西。 */
+input,
+textarea,
+.van-field__control,
+.van-cell__value {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* ★ iOS 上输入框字号 < 16px 会自动放大整个页面。
+   Vant 的 field 默认是 14px，所以要么改大，要么保证 viewport 的
+   `maximum-scale=1`（index.html 里已经写了）。两条都做，防止
+   某个机型忽略 maximum-scale。 */
+.van-field__control {
+  font-size: 15px;
+}
+
+/* ★ 列表卡片化：Vant 的 cell 是「贴边通栏 + 上下细线」，看起来像系统设置页。
+   包一层 `van-cell-group inset` 之后才有卡片感，这里把它的圆角/阴影
+   对齐到管理端的 PagePanel（1px 浅描边 + 极弱阴影，不用纯投影）。 */
+.van-cell-group--inset {
+  margin: 0 12px;
+  border: 1px solid var(--co-border-light);
+  border-radius: var(--co-radius-lg);
+  box-shadow: var(--co-shadow-sm);
+  overflow: hidden;
+}
+
+/* 卡片内部的 cell 不再画上下分割线（外层已经有描边了，双重线很脏） */
+.van-cell-group--inset .van-cell::after {
+  border-bottom-color: var(--co-border-light);
+}
+
+.van-cell-group--inset .van-cell:last-child::after {
+  display: none;
+}
+
+/* ★ 危险/破坏性操作的按钮用描边而不是实心红：
+     实心红按钮在 H5 上太抢，会让「取消订单」看起来像主操作。 */
+.van-button--danger.van-button--plain {
+  background: var(--co-danger-weak);
+  border-color: var(--co-danger-weak);
+  color: var(--co-danger-strong);
+}
+
+/* ★ 安全区：iPhone 底部小黑条会盖住 Tabbar 的最后一格 */
+.van-tabbar {
+  padding-bottom: constant(safe-area-inset-bottom);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.van-tabbar--fixed {
+  padding-bottom: constant(safe-area-inset-bottom);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* 页面底部要留出 Tabbar + 安全区的高度，否则最后一条内容被挡住 */
+.van-tabbar--fixed ~ * .page-with-tabbar,
+.page-with-tabbar {
+  padding-bottom: calc(52px + env(safe-area-inset-bottom) + 12px);
+}

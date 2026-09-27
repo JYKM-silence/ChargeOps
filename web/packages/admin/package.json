@@ -1,0 +1,35 @@
+{
+  "name": "@chargeops/admin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ChargeOps 管理端后台（Vue 3 + Element Plus）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:mock": "vite --mode mock",
+    "build": "vue-tsc --noEmit -p tsconfig.json && vite build",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "preview": "vite preview --port 4173"
+  },
+  "dependencies": {
+    "@chargeops/shared": "workspace:*",
+    "axios": "1.20.0",
+    "element-plus": "2.14.6",
+    "pinia": "4.0.3",
+    "vue": "3.5.43",
+    "vue-router": "5.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@vitejs/plugin-vue": "6.0.9",
+    "msw": "2.15.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.0",
+    "vue-tsc": "3.3.11"
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
+  }
+}

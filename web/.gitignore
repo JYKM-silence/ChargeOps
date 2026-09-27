@@ -1,0 +1,23 @@
+# ---------- 依赖与构建产物 ----------
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# ---------- 环境变量：只有 .env / .env.<mode> 会入库，个人覆盖文件不入库 ----------
+.env.local
+.env.*.local
+
+# ---------- 工具缓存 ----------
+.vite/
+*.tsbuildinfo
+stats.html
+
+# ---------- 编辑器 ----------
+.DS_Store
+.idea/
+*.swp
+
+# ★ 注意：public/mockServiceWorker.js **必须入库**。
+#   它由 `pnpm mock:init` 生成，mock 模式（含把构建产物拿到没有后端的机器上演示）
+#   依赖它才能拦截请求。它是一份固定内容的静态文件，不是构建产物。

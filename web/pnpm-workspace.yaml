@@ -1,0 +1,9 @@
+packages:
+  - 'packages/*'
+# pnpm 11 的构建脚本白名单。
+# msw 的 postinstall 只是打印一句「记得跑 msw init」的提示，不做任何编译，
+# 但**不显式表态 pnpm 会以非 0 退出**（ERR_PNPM_IGNORED_BUILDS），
+# 而 pnpm 会在每次 `pnpm run xxx` 前做一次依赖校验 —— 于是所有脚本全跑不起来。
+# 显式放行以消除这个错误。
+allowBuilds:
+  msw: true
