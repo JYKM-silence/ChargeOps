@@ -19,96 +19,71 @@ import java.util.List;
  * <p>读是 {@code WHERE id = ? AND member_id = ?}，写也是。
  * <b>没有任何一条只按 id 操作的语句</b>，包括 {@code update} 和 {@code delete}。
  *
- * <p>为什么把这件事做进 SQL 而不是靠 Service 里先查后判：
- * <ul>
- *   <li><b>作用域是文件名级的性质，不是某个调用方的自觉。</b>
- *       只要这个接口里不存在「按 id 查车」的方法，
- *       <b>写不出水平越权的代码</b> —— 想越权得先改 Mapper，
- *       而改 Mapper 是一个会被 review 看见的动作</li>
- *   <li><b>「先 SELECT 判断归属、再 UPDATE」是 TOCTOU</b>，
- *       而且它把安全检查放在了<b>未来的调用方可能忘记加</b>的位置。
- *       条件写进 WHERE 之后，权限检查<b>就是</b>写入条件本身</li>
- * </ul>
+ * <p>为什么把这件事做进 SQL 而不是靠 Service 里先查后判：作用域是文件名级的
+ * 性质，只要这个接口里不存在「按 id 查车」的方法，<b>写不出水平越权的代码</b>
+ * —— 想越权得先改 Mapper，而改 Mapper 是一个会被 review 看见的动作。
+ * 而「先 SELECT 判断归属、再 UPDATE」既是 TOCTOU，又把安全检查放在了
+ * <b>未来的调用方可能忘记加</b>的位置。
  *
- * <p>★ 为什么叫 {@code getByIdAndMember} 而不是 {@code getById}：
- * 名字里带上作用域，调用点一眼可见它是安全的。
- * <b>危险的操作应该有一个更扎眼的名字</b>，见 {@link StaffMapper} 的同类论证。
+ * <p>★ 名字里带上作用域（{@code getByIdAndMember} 而不是 {@code getById}），
+ * 让调用点一眼可见它是安全的 —— 危险的操作应该有一个更扎眼的名字。
  *
  * <h2>★★ 二、{@code is_default} 的不变量：由两条条件更新维护</h2>
  *
  * <p>业务规则「每个车主最多一辆默认车」<b>无法用唯一索引表达</b>
- * （完整论证见 {@link Vehicle} 的类注释第一节：那个索引会禁止
- * 「一个车主有两辆非默认车」）。所以它落在下面这两个方法上：
- *
- * <pre>
- *   clearDefaultExcept(defaultVehicle)  把该车主其它车的 is_default 清 0
- *   markDefault(vehicle)                把这一辆置 1
- * </pre>
- *
- * <p><b>三条承重的细节，每一条都不是优化：</b>
+ * （见 {@link Vehicle} 的类注释第一节：那个索引会禁止
+ * 「一个车主有两辆非默认车」），所以它落在
+ * {@code clearDefaultExcept} / {@code markDefault} 这两个方法上。
+ * <b>三条承重的细节，每一条都不是优化：</b>
  *
  * <p><b>1. {@code clearDefaultExcept} 的 {@code id <> #{id}} 是正确性要求。</b>
- * 新建第二辆车时，Service 是先 insert（拿到 id）再清默认的。
- * 那一刻新行在<b>同一个事务里已经可见</b>，而且它的 {@code is_default}
- * 已经是 1 —— 没有这个排除条件，创建操作会把自己刚设的默认标记立刻清掉。
+ * 新建第二辆车时，Service 是先 insert（拿到 id）再清默认的，那一刻新行在
+ * <b>同一个事务里已经可见</b>且 {@code is_default} 已经是 1 ——
+ * 没有这个排除条件，创建操作会把自己刚设的默认标记立刻清掉。
  * ★ <b>而且它是静默的</b>：接口返回成功，用户的第二辆车就是没成为默认车。
  *
  * <p><b>2. {@code markDefault} 的 {@code member_id} 在 WHERE 里，
  * 所以「是不是你的车」就是写入条件本身。</b>影响行数为 0 ⇒ 不存在或不是你的，
- * Service 抛 {@code NotFoundException}。做成「先查归属再 {@code WHERE id=?}」
- * 会重新打开 TOCTOU 窗口，还会把安全检查挪到一个未来的调用方可能忘记加的地方。
+ * Service 抛 {@code NotFoundException}。
  *
- * <p><b>3. {@code clearDefaultExcept} 返回 0 不是错误。</b>
- * 该车主其它车本来就都不是默认车时，它匹配 0 行，这是正常情况。
- * <b>只有 {@code markDefault} 的行数携带含义</b> ——
+ * <p><b>3. {@code clearDefaultExcept} 返回 0 不是错误</b>（其它车本来就不是
+ * 默认车）。<b>只有 {@code markDefault} 的行数携带含义</b> ——
  * 不要让这两个返回值被对称地处理。
  *
  * <p><b>★ 并发：这两条是「条件更新」，不是「先读再写」。</b>
- * 两个并发的「设为默认」不会都成功：{@code WHERE member_id = ?} 会走
- * {@code uk_vehicle_member_plate} 的最左前缀，把该车主的车辆行全部锁住，
- * 两个事务在第一条语句上就串行化了。最终恰好一辆是默认车。
+ * {@code WHERE member_id = ?} 会走 {@code uk_vehicle_member_plate} 的最左前缀，
+ * 把该车主的车辆行全部锁住，两个并发的「设为默认」在第一条语句上就串行化了，
+ * 最终恰好一辆是默认车。
  *
- * <p>★ <b>残留的口子只有一个，而且不是代码能防的</b>：手工 SQL
- * 可以直接把两辆车都改成 {@code is_default = 1}。
- * 修法就是再调一次「设为默认」（{@code clearDefaultExcept} 顺带充当修复路径）。
- * —— 这也是为什么读侧不写 {@code WHERE is_default = 1} 期望一行，
+ * <p>★ <b>残留的口子只有一个，而且不是代码能防的</b>：手工 SQL 可以直接把
+ * 两辆车都改成 {@code is_default = 1}，修法就是再调一次「设为默认」。
+ * 这也是为什么读侧不写 {@code WHERE is_default = 1} 期望一行，
  * 而是按 {@code is_default DESC, id DESC} 取第一条：数据真坏了时，
  * 页面只是多显示一个标记，而不是抛 {@code TooManyResultsException}。
  *
  * <h2>★ 三、这两个方法为什么收实体参数，而不是收两个 id</h2>
  *
  * <p>机械原因：{@code AutoFillInterceptor.findEntity} 会把<b>第一个参数</b>
- * 当成实体交给反射填充器。收 {@code (@Param("memberId") Long, @Param("excludeId") Long)}
- * 的话，插件会拿那个 {@code Long} 去找 {@code setUpdateTime(LocalDateTime)}，
- * 找不到就抛 {@code IllegalStateException} ——
- * ★ <b>运行时错误，第一次调用才炸，启动时完全看不出来。</b>
+ * 当成实体交给反射填充器，收 {@code Long} 的话插件会拿它去找
+ * {@code setUpdateTime(LocalDateTime)}，找不到就抛
+ * {@code IllegalStateException} —— ★ <b>运行时错误，第一次调用才炸。</b>
  *
- * <p>语义原因（更重要）：这两个语句<b>确实在改行</b>，所以它们<b>应该</b>
- * 写审计列。把要成为默认车的那辆 {@code Vehicle} 传进来，既满足了插件，
- * 又让 {@code update_user} 记下了「谁改的」。
- * 传一个纯粹为满足反射而造的假对象才是坏味道 —— 这里传的是真对象：
- * create 路径上是刚插入的那辆，setDefault 路径上是目标那辆。
+ * <p>语义原因（更重要）：这两个语句<b>确实在改行</b>，所以它们<b>应该</b>写审计列。
+ * 传进来的就是真对象（create 路径上是刚插入的那辆，setDefault 路径上是目标那辆），
+ * 不是为满足反射而造的假对象。
  *
- * <h2>★ 四、没有「有订单就不能删」的守卫，而且 P1c 也不要加</h2>
+ * <h2>★ 四、没有「有订单就不能删」的守卫，也不要加</h2>
  *
- * <p>{@code charging_order.plate_no} 的列注释写着：
- * 「车牌快照：<b>车辆可被删除/改牌</b>，订单必须保留当时值」。
- * {@code charging_order.vehicle_id} 也允许 NULL，悬挂引用是<b>被设计得出来的</b>。
+ * <p>{@code charging_order.plate_no} 的列注释写着：「车牌快照：
+ * <b>车辆可被删除/改牌</b>，订单必须保留当时值」，{@code vehicle_id}
+ * 也允许 NULL —— 悬挂引用是<b>被设计得出来的</b>。所以「车被删了」
+ * 这件事的检查属于<b>下单路径</b>，不属于删除路径；加在这里会让
+ * 「卖车之后想把车从列表里去掉」这个正当操作变得不可能
+ * （{@code vehicle} 没有 status 列，硬删是唯一手段）。
  *
- * <p>★ 所以「车被删了」这件事的检查属于<b>下单路径</b>
- * （按 {@code id + member_id} 取车，取不到就 404），不属于删除路径。
- * 加在这里会和 DDL 的意图直接冲突，而且让「卖车之后想把车从列表里去掉」
- * 这个完全正当的操作变得不可能（{@code vehicle} 没有 status 列，
- * 硬删是唯一手段）。
- *
- * <p>★ 对 P1c 的第二个交代：<b>订单查询不许 JOIN vehicle 取车牌</b>，
- * 必须读 {@code charging_order.plate_no} 快照列。否则删车之后
- * 历史订单的车牌就消失了 —— 而那张表存在的意义就是留住当时的值。
- *
- * <p>对照记账：{@code station} / {@code charger} / {@code charge_package}
- * 三处<b>都</b>有删除守卫（{@code assertDeletable}）。
- * vehicle 是唯一一个 DDL 已经替我们回答过这个问题的域。
- * 说明这一点，是为了让它看起来不像一个遗漏。
+ * <p>★ 第二个交代：<b>订单查询不许 JOIN vehicle 取车牌</b>，
+ * 必须读 {@code charging_order.plate_no} 快照列 —— 否则删车之后
+ * 历史订单的车牌就消失了，而那张表存在的意义就是留住当时的值。
  */
 @Mapper
 public interface VehicleMapper {
@@ -129,14 +104,12 @@ public interface VehicleMapper {
      * <p>★ 不分页，因为一个车主的车辆数在个位 —— 这是刻意的，
      * 也是车主端没有 {@code /page} 接口的原因。
      *
-     * <p>★ 排序 {@code is_default DESC, id DESC}：默认车在最前，
-     * 其余按添加顺序倒序（新车在前）。
-     * {@code id} 唯一 → 全序 → 排序稳定，翻页/刷新不会跳。
+     * <p>★ 排序 {@code is_default DESC, id DESC}：默认车在最前，其余按添加顺序
+     * 倒序；{@code id} 唯一 → 全序 → 排序稳定，翻页/刷新不会跳。
      *
-     * <p>★ 走 {@code uk_vehicle_member_plate} 的最左前缀
-     * （{@code member_id}），所以这个查询是走索引的 ——
-     * DDL 里那句「一次解决两件事」说的就是这个：
-     * 唯一键顺便当了「查我的车辆」的索引，不需要再建一条 member_id 索引。
+     * <p>★ 走 {@code uk_vehicle_member_plate} 的最左前缀（{@code member_id}），
+     * 所以这个查询是走索引的 —— DDL 里那句「一次解决两件事」说的就是这个：
+     * 唯一键顺便当了「查我的车辆」的索引。
      */
     List<Vehicle> listByMemberId(@Param("memberId") Long memberId);
 
@@ -145,9 +118,6 @@ public interface VehicleMapper {
      *
      * <p>用途只有一个：判断「这是不是他的第一辆车」，
      * 是的话强制 {@code is_default = 1}（见 {@code VehicleServiceImpl.create}）。
-     *
-     * <p>★ 用 {@code COUNT(*)} 而不是查出列表再 {@code size()}：
-     * 这个判断只需要一个数字，而 {@code listByMemberId} 会把整行拉回来。
      */
     @Select("SELECT COUNT(*) FROM vehicle WHERE member_id = #{memberId}")
     int countByMemberId(@Param("memberId") Long memberId);
@@ -167,10 +137,6 @@ public interface VehicleMapper {
 
     /**
      * 按主键更新非空字段，<b>限定归属车主</b>
-     *
-     * <p>★ XML 里的 {@code WHERE} 是 {@code id = #{id} AND member_id = #{memberId}}，
-     * 不是只按 id。所以「改别人的车」在 SQL 层面就改不到 ——
-     * 影响行数会是 0，Service 据此抛 {@code NotFoundException}。
      *
      * <p>★ {@code is_default} <b>不在这条 update 的范围里</b>。
      * 改默认车只有一个入口：{@code PUT /api/member/vehicle/{id}/default}。
@@ -198,9 +164,9 @@ public interface VehicleMapper {
      *
      * <p>★ 返回 0 行是正常情况（其它车本来就不是默认车），<b>不是错误</b>。
      *
-     * <p>★ 审计两列显式写：这条语句确实在改行，不写的话
-     * {@code update_user} 会停在旧值上，而 {@code update_time}
-     * 却因为 DDL 的 {@code ON UPDATE} 前进了 —— 一个自相矛盾的行。
+     * <p>★ 审计两列显式写：不写的话 {@code update_user} 会停在旧值上，
+     * 而 {@code update_time} 却因为 DDL 的 {@code ON UPDATE} 前进了 ——
+     * 一个自相矛盾的行。
      */
     @AutoFill(OperationType.UPDATE)
     @Update("UPDATE vehicle SET is_default = 0, update_time = #{updateTime}, update_user = #{updateUser} "

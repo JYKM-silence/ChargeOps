@@ -4,12 +4,9 @@
 <mapper namespace="com.chargeops.mapper.VehicleMapper">
 
     <!--
-      vehicle 没有需要隐藏的列（不像 member/staff 的 password），所以这里是全列。
-      但只要它被三处 include，就仍然值得抽 —— 加一列时只改一行。
-
-      不写 <resultMap>：map-underscore-to-camel-case=true 已经把
-      member_id → memberId、plate_no → plateNo、is_default → isDefault
-      这类映射做掉了。
+      vehicle 没有需要隐藏的列（不像 member/staff 的 password），这里是全列，被三处 include。
+      不写 <resultMap>：map-underscore-to-camel-case=true 已经把 member_id → memberId、
+      plate_no → plateNo、is_default → isDefault 这类映射做掉了。
     -->
     <sql id="Base_Column_List">
         id, member_id, plate_no, plate_color, brand, model, battery_capacity_kwh,
@@ -17,9 +14,7 @@
     </sql>
 
     <!--
-      ★★ 注意 WHERE 里是**两个**条件。
-
-      这个接口里不存在「只按 id 查车」的语句，是刻意的：
+      ★★ WHERE 里是**两个**条件。这个接口里不存在「只按 id 查车」的语句，是刻意的：
       作用域做进 SQL 之后，水平越权在这个 Mapper 上就**写不出来**了 ——
       想越权得先改这里，而改 Mapper 是一个会被 review 看见的动作。
       完整论证见 VehicleMapper 的类注释第一节。
@@ -33,12 +28,9 @@
     </select>
 
     <!--
-      ★ 排序 is_default DESC, id DESC 是**读侧的确定性约定**：
-
-        需要「默认车」时取第一条，**不要**另写一个
-        `WHERE is_default = 1` 然后期望只返回一行 ——
-        万一数据因为手工 SQL 出了两辆默认车，那种写法会抛
-        TooManyResultsException，而这一个只是多显示一个标记。
+      ★ 排序 is_default DESC, id DESC 是**读侧的确定性约定**：需要「默认车」时取第一条，
+        **不要**另写 `WHERE is_default = 1` 然后期望只返回一行 —— 万一数据因为手工 SQL
+        出了两辆默认车，那种写法会抛 TooManyResultsException，而这个只是多显示一个标记。
 
       ★ 走 uk_vehicle_member_plate 的最左前缀（member_id），是索引查询。
     -->
@@ -51,13 +43,10 @@
     </select>
 
     <!--
-      新增。
-
       ★ is_default 是 NOT NULL 且走全列插入 —— 传 null 会 errno 1048，
         不是「用上 DDL 的 DEFAULT 0」。默认值由 VehicleDTO 的字段初始值提供，
         Service 再兜一次（字段初始值挡不住显式的 JSON null）。
-
-      ★ 审计四列由 AutoFillInterceptor 填，这里取属性值。
+      审计四列由 AutoFillInterceptor 填，这里取属性值。
     -->
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO vehicle (member_id, plate_no, plate_color, brand, model, battery_capacity_kwh,
@@ -69,22 +58,19 @@
     </insert>
 
     <!--
-      修改：<set> + <if> 只更新非 null 的字段。
+      ★★ WHERE 是 id + member_id 两个条件，不是只按 id（见上面 getByIdAndMember 的注释）。
+        影响行数为 0 时 Service 抛 NotFoundException（「不存在或不是你的」）。
 
-      ★★ WHERE 是 id + member_id 两个条件，不是只按 id —— 见上面 getByIdAndMember 的注释。
-         影响行数为 0 时 Service 抛 NotFoundException（「不存在或不是你的」）。
-
-      ★★ 注意这里**没有** is_default、**没有** member_id：
-        - is_default 只能通过 PUT /{id}/default 改（两条写入路径通向同一个
-          不变量，迟早有一条忘了清旧的），VehicleUpdateDTO 里也没有这个字段
+      ★★ 这里**没有** is_default、**没有** member_id：
+        - is_default 只能通过 PUT /{id}/default 改（两条写入路径通向同一个不变量，
+          迟早有一条忘了清旧的），DTO 里也没有这个字段
         - member_id 是身份，不是资料 —— 「这辆车是谁的」不允许被改
 
-      ★ 判断条件分两种（理由同 MemberMapper.xml）：
-        - String 字段写 `!= null and != ''`
-        - plate_color 是 Integer，**只能写 `!= null`**（和空串比较恒为 false）
+      ★ 判断条件分两种（理由同 MemberMapper.xml）：String 写 `!= null and != ''`；
+        plate_color 是 Integer，**只能写 `!= null`**（和空串比较恒为 false）。
 
-      ★ plate_no 允许修改 —— DDL 明说了车辆可以被「删除/改牌」，
-        订单有自己的快照列，所以改牌不会破坏历史（见 Vehicle 类注释第三节）。
+      ★ plate_no 允许修改 —— 订单有自己的快照列，所以改牌不会破坏历史
+        （见 Vehicle 类注释第三节）。
 
       ★ 审计两列无条件带上。
     -->
