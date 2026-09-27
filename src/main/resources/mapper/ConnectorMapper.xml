@@ -5,13 +5,9 @@
 
     <!--
       ★★ 这份 XML 与其它几份的关键区别：<b>没有 create_user / update_user</b>。
-
-      connector 表只有两个审计时间列。所以这里<b>不能</b>出现
-      #{createUser} / #{updateUser}，Mapper 接口上也<b>不能</b>标 @AutoFill ——
-      AutoFillInterceptor 反射找不到 setCreateUser(Long) 会直接抛
-      IllegalStateException，所有写操作当场炸掉。
-
-      create_time / update_time 由 ConnectorServiceImpl 显式 set 之后传进来。
+        所以这里<b>不能</b>出现 #{createUser} / #{updateUser}，接口上也<b>不能</b>
+        标 @AutoFill —— 插件反射找不到 setCreateUser(Long) 会直接抛
+        IllegalStateException。两个时间列由 Service 显式 set 后传进来。
     -->
     <sql id="Base_Column_List">
         id, charger_id, station_id, gun_no, connector_type, rated_power_kw, status,
@@ -27,14 +23,10 @@
     </select>
 
     <!--
-      新增。
-
-      ★ 没有 current_order_id / total_charge_count / version ——
-        它们一律取 DDL 默认值（NULL / 0 / 0）。
-
-        这不是省事，是一个安全性设计：<b>P1a 不可能创建出一把已被占用的枪</b>。
-        current_order_id 归 P1c 的订单状态机，如果能从管理端的创建接口写进去，
-        就等于给「枪-订单互斥」这条唯一索引开了一个可以绕过的注入口。
+      ★ 没有 current_order_id / total_charge_count / version，一律取 DDL 默认值
+        （NULL / 0 / 0）。这不是省事，是安全性设计：<b>管理端的创建接口不可能
+        造出一把已被占用的枪</b> —— 那等于给「枪-订单互斥」这条唯一索引开了
+        一个可以绕过的注入口。current_order_id 只归订单状态机写。
 
       ★ station_id 是冗余列（等于 charger.station_id），由 Service 从桩派生填入。
         它 NOT NULL 且无默认值，所以必须在这里出现。
@@ -47,27 +39,21 @@
     </insert>
 
     <!--
-      更新，带乐观锁。
+      ★ WHERE 里的 AND version = #{version} 是承重的：去掉它，两个并发请求
+        后到的那个会静默覆盖先到的，没有任何报错。
 
-      ★ WHERE 里的 AND version = #{version} 是承重的：
-        去掉它，这条 SQL 就变成一个普通的全列更新，
-        两个并发请求后到的那个会静默覆盖先到的 —— 没有任何报错。
+      ★ SET 里的 version = version + 1 在 SQL 侧算：在 Java 侧算（先读 V 再写 V+1）
+        的话，「读出来」和「写进去」之间有一个窗口，写进去的版本号仍然基于旧值。
 
-      ★ SET 里的 version = version + 1 在 SQL 侧算。
-        在 Java 侧算（先读 V、再写 V+1）的话，
-        「读出来的 V」和「写进去的 V+1」之间有一个窗口，
-        窗口里别人改了数据，写进去的版本号仍然是基于旧值的。
-
-      ★ ★ 这里没有 <if test="version != null"> —— version 是无条件出现在
-        WHERE 里的。如果版本号能缺省，这个乐观锁就是可选的，
-        而「可选的一致性保护」等于没有保护：调用方漏传一次就是一次静默覆盖。
-        漏传时 #{version} 绑成 NULL，`version = NULL` 恒不成立，
-        影响 0 行 → 上层报冲突。这是一个<b>保守的失败</b>，方向是对的。
+      ★ <b>没有</b> <if test="version != null"> —— version 无条件出现在 WHERE 里。
+        如果版本号能缺省，「可选的一致性保护」等于没有保护：调用方漏传一次就是
+        一次静默覆盖。漏传时 #{version} 绑成 NULL，`version = NULL` 恒不成立，
+        影响 0 行 → 上层报冲突，这是一个<b>保守的失败</b>。
 
       ★ gun_no / connector_type / rated_power_kw / status 是管理员能改的全部。
-        charger_id 不在里面：把枪挪到别的桩会让 charger.gun_count
-        在两处同时失真，而且它历史上的订单会挂在一根不属于它的桩下面。
-        这个字段被<b>刻意排除在 DTO 之外</b>，所以编译期就改不了。
+        charger_id 不在里面（也被<b>刻意排除在 DTO 之外</b>，编译期就改不了）：
+        把枪挪到别的桩会让 charger.gun_count 失真，而且它历史上的订单会挂在
+        一根不属于它的桩下面。
     -->
     <update id="update">
         UPDATE connector
@@ -84,13 +70,134 @@
     </update>
 
     <!--
-      分页查询。
+      ==========================================================================
+      订单状态机对枪的四个写操作
+      ==========================================================================
+      ★★ 这四条是 current_order_id 的<b>唯一</b>写入点，也是 uk_connector_current_order
+         这张唯一索引真正开始起作用的时刻 —— 在此之前它一直是空的，因为没有任何代码
+         写过这一列。
 
+      和管理端的 update 分成两套 SQL 是刻意的（见 ConnectorMapper 类注释第三节）：
+      管理端那条走 WHERE id = ? AND version = ?（version 由客户端回传），
+      这四条走「当前占用者是不是这个订单」——**判据不同，不该共用一个方法**。
+
+      ★ 四条都推 version = version + 1。理由是管理端 update 的 SET 子句里有 status：
+        如果占用/释放不推版本号，管理员在充电期间把枪改成「4 故障」会成功，
+        随后 release 的 SET status = 1 就把故障静默覆盖掉。
+        推版本号之后，管理员手上那个陈旧的 version 会让他的更新影响 0 行、
+        得到「请刷新后重试」——这正是乐观锁该做的事。
+    -->
+
+    <!--
+      ★★ 建单时抢占这把枪。★★
+
+      ★ <b>这是「一把枪同时只能有一个订单」的真正实现</b>，不是充电枪占用时查一次
+        charging_order 的那次 SELECT —— 那次是「先查后插」，两个并发请求会同时
+        查到「没有进行中的订单」，然后各建一笔。条件更新的影响行数是<b>数据库给的
+        裁决</b>，不是应用层再判一次。
+
+      ★ WHERE 里的 status = 1 是必需的，不能只判 current_order_id IS NULL：
+        「4 故障」「5 维护」「0 离线」的枪都不该被下单，而它们同样是 NULL。
+        把两个条件放在同一条 WHERE 里，就不存在「查到空闲、写的时候已经被改成
+        故障」这个窗口。
+
+      ★ 不要在这里写 total_charge_count —— 它归结算（见 incrementChargeCount）。
+    -->
+    <update id="occupy">
+        UPDATE connector
+        SET status = 2,
+            current_order_id = #{orderId},
+            version = version + 1,
+            update_time = #{updateTime}
+        WHERE id = #{connectorId}
+          AND status = 1
+          AND current_order_id IS NULL
+    </update>
+
+    <!--
+      设备上报「启动成功」：2 已占用 → 3 充电中
+
+      ★ 谓词用 current_order_id = #{orderId} 而不是 id = #{connectorId}：
+        它同时回答了「这把枪现在是不是<b>我这一单</b>占着」。
+        只按 id 写的话，一笔迟到的启动上报会把一把已经被<b>别的订单</b>占用的枪
+        改成「充电中」，而那把枪上的钱是按另一笔订单冻的。
+    -->
+    <update id="markCharging">
+        UPDATE connector
+        SET status = 3,
+            version = version + 1,
+            update_time = #{updateTime}
+        WHERE id = #{connectorId}
+          AND current_order_id = #{orderId}
+    </update>
+
+    <!--
+      设备上报「结束」：3 充电中 → 2 已占用
+
+      ★ 车已经拔枪，但订单还要结算，枪仍然归这一单 —— 所以回到「已占用」而不是
+        直接「空闲」。直接放空闲的话，结算期间别人可以下第二笔单，
+        而结算正是要读这把枪的起始电表读数的时候。
+
+      ★ 停在「充电中」是另一个选择，但它会让运维在界面上看到一把充完了却还写着
+        「充电中」的枪，而订单已经是「待结算」了。
+    -->
+    <update id="markOccupied">
+        UPDATE connector
+        SET status = 2,
+            version = version + 1,
+            update_time = #{updateTime}
+        WHERE id = #{connectorId}
+          AND current_order_id = #{orderId}
+    </update>
+
+    <!--
+      ★★ 释放（订单进入终态，或已经不再占着这把枪）★★
+
+      ★ <b>谓词只有 current_order_id = #{orderId}，没有状态条件</b> ——
+        这不是漏写，是让这个方法<b>幂等且自守卫</b>：
+          · 重复调用 → 第二次影响 0 行，没有副作用；
+          · 对一把从未被本单占用的枪调用 → 影响 0 行；
+          · 不需要知道订单的「上一个状态」是什么。
+        正因为它有这条性质，释放可以从 cancel / settle / markAbnormal 三处
+        各自调用，而不必让每处都先判断「我这笔订单还占着枪吗」。
+
+      ★ SET status = 1 会覆盖管理员在此期间设的「4 故障」。这是<b>已知且接受</b>的：
+        枪确实是空闲了，而「故障」这件事管理员会再看到（update_time 已经变了）。
+        要挡住的话得写 CASE WHEN status IN (2,3) THEN 1 ELSE status END，
+        但那样在管理员设过故障之后 current_order_id 会永久留在非空状态，
+        这把枪从此既不能删也不能再被下单 —— 一个更糟的失败。
+    -->
+    <update id="release">
+        UPDATE connector
+        SET status = 1,
+            current_order_id = NULL,
+            version = version + 1,
+            update_time = #{updateTime}
+        WHERE current_order_id = #{orderId}
+    </update>
+
+    <!--
+      ★ 累计充电次数 +1，由结算在<b>同一个事务</b>里调用。
+
+      ★ 写成 SQL 自增，不要「先读出来再加一写回去」：后者在并发下会丢更新
+        （两笔订单各自读到 5，各自写 6，实际应该是 7）。这和 version 走 SQL 侧
+        是同一个理由。
+
+      ★ <b>不推 version</b>：这一列不在管理端 update 的 SET 子句里，两个方向都
+        不会丢失更新；而推了它会让每个管理员在每次有车充完电时收到一次假冲突。
+        这与上面四条恰好相反，因为那四条改的是 status —— 那是管理员也能改的列。
+    -->
+    <update id="incrementChargeCount">
+        UPDATE connector
+        SET total_charge_count = total_charge_count + 1
+        WHERE id = #{connectorId}
+    </update>
+
+    <!--
       ★ ORDER BY id DESC，理由见 StationMapper.xml。
 
-      ★ stationId 走 idx_connector_station_status 的第一列，
-        这正是「枪冗余一份 station_id」这个决定的回报 ——
-        不带这个冗余列的话，「这个站有哪些枪」每次都要 join charger。
+      ★ stationId 走 idx_connector_station_status 的第一列，这正是「枪冗余一份
+        station_id」这个决定的回报 —— 否则「这个站有哪些枪」每次都要 join charger。
     -->
     <select id="page" resultType="com.chargeops.entity.Connector">
         SELECT
@@ -111,6 +218,58 @@
             </if>
         </where>
         ORDER BY id DESC
+    </select>
+
+    <!--
+      ★★ 车主端「这个站有哪些枪」—— 不过滤 status，全给 ★★
+
+        ★ 只返回空闲的枪会让一个正在维护的站点显示成**空列表**，
+          而真相是「有 8 把枪，现在都不能用」。两句话完全不同，
+          而后者才是能让人做出决定的那个。状态原样返回，由前端决定怎么呈现。
+
+        ★ 走 idx_connector_station_status 的第一列 —— 这就是「connector 冗余
+          一份 station_id」的回报，否则每次都要 join charger。
+
+        ★ ORDER BY id 的唯一目的是**确定性**：不加它行序未定义，
+          两次请求可能给出不同顺序，前端做 diff 会莫名抖动。
+          真正的展示顺序（先可用、再按桩分组）是前端的展示逻辑，不固化在这里 ——
+          按 gun_no 排会得到 1, 10, 2；按 id 排取决于建枪顺序，都对不上现场。
+    -->
+    <select id="listByStation" resultType="com.chargeops.entity.Connector">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM connector
+        WHERE station_id = #{stationId}
+        ORDER BY id
+    </select>
+
+    <!--
+      ★★ 一批站点各自的枪数 —— 一次查询覆盖整页，不是逐个 COUNT。★★
+
+        ★ SUM(status = 1) 在**没有任何一行满足**时返回 NULL 而不是 0
+          （对照 COUNT，它恒返回 0）。所以 COALESCE 不是装饰：
+          一个站下有 3 把枪但全是故障时，不写它会得到 idleCount = null，
+          界面上显示成空白而不是 0 —— 而「空白」和「0」在展示上会混成同一个东西，
+          它们却是不同的意思。
+
+        ★ 站下没有枪时**整行都不出现**（GROUP BY 只给有匹配行的组），
+          所以调用方要用「取不到就是 0」的默认值，不能直接拆箱。
+
+        ★ 别名必须和 StationConnectorCountVO 的字段名逐字对齐
+          （依赖 map-underscore-to-camel-case）。改一个就要改两处。
+
+        ★ 不能传空集合，同 ChargerMapper.listByIds。
+    -->
+    <select id="countByStationIds" resultType="com.chargeops.vo.StationConnectorCountVO">
+        SELECT station_id                              AS stationId,
+               COUNT(*)                                AS connectorCount,
+               COALESCE(SUM(status = 1), 0)            AS idleConnectorCount
+        FROM connector
+        WHERE station_id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        GROUP BY station_id
     </select>
 
 </mapper>

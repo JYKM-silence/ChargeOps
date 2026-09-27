@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.chargeops.mapper.ChargingSegmentMapper">
+
+    <sql id="Base_Column_List">
+        id, order_id, seq, period_type, start_time, end_time, duration_seconds,
+        energy_kwh, energy_price, service_price, energy_fee, service_fee, amount, create_time
+    </sql>
+
+    <!--
+      ★★ 这条 INSERT 是结算幂等的落点：uk_segment_order_start (order_id, start_time)。
+         结算算法重跑时重复插入相同分段会**撞唯一键**，而不是把金额翻倍。
+
+         不用「先 delete 再 insert」：那个做法在重试和并发下会丢数据 ——
+         A 删完还没插，B 也删一遍然后插进去，A 再插就重复了；或者 A 删完崩溃，
+         B 以为没数据也不插，分段全没了。唯一键是数据库层面的保证，不依赖代码时序。
+
+      ★ 前提：分段**不能有零长度**。订单起止时间恰好落在时段边界上时会产生
+         [10:00, 10:00)，它会撞上唯一键。BillingEngine 用「切点去重 + 跳过非正
+         长度」在结构上排除了这件事，见那个类里 toWindows 那段说明。
+
+      ★ create_time 由调用方统一给同一个时刻 —— 本表没有 create_user，
+        用不了 @AutoFill；而且一次结算的所有分段本来就写于同一刻。
+    -->
+    <insert id="batchInsert">
+        INSERT INTO charging_segment (order_id, seq, period_type, start_time, end_time,
+                                      duration_seconds, energy_kwh, energy_price, service_price,
+                                      energy_fee, service_fee, amount, create_time)
+        VALUES
+        <foreach collection="segments" item="s" separator=",">
+            (#{s.orderId}, #{s.seq}, #{s.periodType}, #{s.startTime}, #{s.endTime},
+             #{s.durationSeconds}, #{s.energyKwh}, #{s.energyPrice}, #{s.servicePrice},
+             #{s.energyFee}, #{s.serviceFee}, #{s.amount}, #{s.createTime})
+        </foreach>
+    </insert>
+
+    <!--
+      ★ 按 seq 排序，**不是** start_time：seq 是引擎产出的顺序（从 1 连续递增），
+        而 start_time 万一有脏数据，排序会静默地把账单展示成错乱的顺序。
+        走 idx_segment_order_seq (order_id, seq)，直接给出有序结果。
+    -->
+    <select id="listByOrderId" resultType="com.chargeops.entity.ChargingSegment">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM charging_segment
+        WHERE order_id = #{orderId}
+        ORDER BY seq ASC
+    </select>
+
+</mapper>
