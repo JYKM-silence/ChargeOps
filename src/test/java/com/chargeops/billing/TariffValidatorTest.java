@@ -36,7 +36,7 @@ class TariffValidatorTest {
                 new BigDecimal("0.5000"), new BigDecimal("0.3000"));
     }
 
-    /** 与 sql/chargeops.sql 的 8 行种子完全一致 */
+    /** 与 V2__seed_data.sql 的 8 行种子完全一致 */
     private static List<TariffRuleSnapshot> shenzhenRules() {
         return new ArrayList<>(List.of(
                 rule("00:00:00", "08:00:00", PeriodType.VALLEY),

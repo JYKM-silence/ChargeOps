@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <h2>规则集</h2>
  *
- * <p>默认用 {@link #shenzhenRules()}，与 {@code sql/chargeops.sql} 的种子数据一致：
+ * <p>默认用 {@link #shenzhenRules()}，与 {@code V2__seed_data.sql} 的种子数据一致：
  * 尖峰 4h / 高峰 7h / 平段 5h / 低谷 8h，合计 24h。
  * 「非种子规则集」的用例用别处构造的小规则集。
  */
@@ -54,7 +54,7 @@ class BillingEngineTest {
                 new BigDecimal(energyPrice), new BigDecimal(servicePrice));
     }
 
-    /** 与 sql/chargeops.sql 里 {@code tariff_template_id=1} 的 8 行完全一致 */
+    /** 与 V2__seed_data.sql 里 {@code tariff_template_id=1} 的 8 行完全一致 */
     private static List<TariffRuleSnapshot> shenzhenRules() {
         return new ArrayList<>(List.of(
                 rule("00:00:00", "08:00:00", PeriodType.VALLEY, "0.3188", "0.3000"),

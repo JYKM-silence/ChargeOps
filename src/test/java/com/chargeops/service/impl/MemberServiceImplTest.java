@@ -722,6 +722,36 @@ class MemberServiceImplTest {
                     "本测试类不覆盖分页，见 MemberMapperTest 的集成测试");
         }
 
+        /**
+         * ★ 补这个是**编译器逼出来的**，正是本桩手写而不 Mockito 的理由
+         *   （见类注释）：接口一加方法，这里就编译不过，不会静默返回 null ——
+         *   而在这个类里「返回 null」恰好是「查不到这个账号」这个合法分支，
+         *   静默漏掉会以一条看起来完全合理的失败测试收场。
+         *
+         * <p>唯一的调用方是 {@code ChargingOrderServiceImpl} 的
+         * 「按手机号前缀查订单」，与车主自身的注册 / 改密码 / 改资料无关。
+         */
+        @Override
+        public List<Long> listIdsByPhonePrefix(String phone, int limit) {
+            throw new UnsupportedOperationException(
+                    "本测试类不覆盖按手机号前缀查 id，那是订单侧的查询");
+        }
+
+        /**
+         * ★ 同 {@link #listIdsByPhonePrefix}：也是编译器逼出来的。
+         *
+         * <p>唯一的调用方是 {@code ChargingOrderServiceImpl.pageForAdmin}
+         * 给管理端订单列表补车主昵称 / 手机号，和车主自身的注册 / 登录 / 改资料无关。
+         * ★ 这里更必须响亮地失败：一个返回 null 的 {@code listByIds} 会被
+         * {@code ChargingOrderServiceImpl} 当成「这些车主都查不到」，
+         * 于是订单列表安静地少掉一列车主信息 —— 一条不会有人发现的失败。
+         */
+        @Override
+        public List<Member> listByIds(List<Long> ids) {
+            throw new UnsupportedOperationException(
+                    "本测试类不覆盖按 id 批量查车主，那是管理端订单列表的查询");
+        }
+
         /** 浅拷贝一份并把 password 清掉，不修改原始 fixture */
         private static Member withoutPassword(Member source) {
             if (source == null) {

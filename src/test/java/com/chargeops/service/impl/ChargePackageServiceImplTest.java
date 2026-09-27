@@ -513,6 +513,12 @@ class ChargePackageServiceImplTest {
             throw new UnsupportedOperationException(
                     "本测试类不覆盖「分类下有几个套餐」，见 CategoryServiceImplTest");
         }
+
+        @Override
+        public List<ChargePackage> listAvailableForMember(Long stationId) {
+            throw new UnsupportedOperationException(
+                    "本测试类不覆盖车主端货架，见 MemberPackageServiceImplTest 的集成测试");
+        }
     }
 
     /**

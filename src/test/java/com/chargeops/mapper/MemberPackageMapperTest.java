@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <ol>
  *   <li>{@code uk_mp_locked_order}：同一份权益不能被两笔订单同时锁住</li>
  *   <li>{@code locked_order_id} 兼作幂等闸门：重复结算只扣一次</li>
- *   <li>{@code listUsable} 的四个条件缺一不可，尤其
+ *   <li>{@code listUsable} 的五个条件缺一不可，尤其
  *       <b>折扣包不能有余量条件</b></li>
  *   <li>结算用尽时 {@code status} 由 SQL 的 {@code CASE} 自动置 2</li>
  * </ol>
@@ -40,14 +40,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <h2>★★ 为什么每条测试用自己的 memberId，而不是复用种子里的 member 1 ★★</h2>
  *
  * <p>种子里已经给 {@code member_id = 1} 塞了一份「150度电包」（见
- * {@code sql/chargeops.sql} 的 seed 段）。如果测试也往 member 1 上面挂，
+ * {@code V2__seed_data.sql}）。如果测试也往 member 1 上面挂，
  * {@link MemberPackageMapper#listUsable} 就会同时看到种子行和测试行 ——
  * 断言「可用列表里有 1 条」会变成一条依赖种子数据的脆弱测试，
  * 而且失败信息会指向一个和本次改动无关的行。
  *
  * <p>用 {@code System.nanoTime()} 生成独立的 memberId，每条测试
  * 就只看得见自己造的数据。{@code member_id} 上<b>没有外键</b>
- * （全库统一不加 FK，理由见 {@code sql/chargeops.sql} 的头部说明），
+ * （全库统一不加 FK，理由见 {@code V1__init_schema.sql} 的头部说明），
  * 所以凭空造一个 id 是合法的 —— 这一点由下面的
  * {@code insertShouldNotNeedARealMember} 显式固定下来。
  */
@@ -418,8 +418,8 @@ class MemberPackageMapperTest {
     // ==================== listUsable ====================
 
     @Test
-    @DisplayName("★★ listUsable：四个条件缺一不可（status / 未锁定 / 未过期 / 有余量）")
-    void listUsableShouldApplyAllFourConditions() {
+    @DisplayName("★★ listUsable：五个条件缺一不可（status / 未锁定 / 未生效 / 未过期 / 有余量）")
+    void listUsableShouldApplyAllFiveConditions() {
         BaseContext.setCurrentId(1L);
         long memberId = newMemberId();
         LocalDateTime now = now();
@@ -449,10 +449,20 @@ class MemberPackageMapperTest {
         jdbcTemplate.update("UPDATE member_package SET remaining_kwh = 0 WHERE id = ?",
                 drained.getId());
 
+        // ⑤ 还没到生效日（effective_from 在未来）
+        MemberPackage notYet = MemberPackage.builder()
+                .memberId(memberId).packageId(1L).packageType(1)
+                .packageName("下月生效")
+                .totalKwh(new BigDecimal("150.00")).remainingKwh(new BigDecimal("150.00"))
+                .effectiveFrom(now.plusDays(30)).expireTime(now.plusDays(120))
+                .status(1).version(0).build();
+        memberPackageMapper.insert(notYet);
+        createdIds.add(notYet.getId());
+
         List<MemberPackage> result = memberPackageMapper.listUsable(memberId, 1, now);
 
         // ★★ 只有 ① 那份可用。
-        //   ②③④ 每一个漏掉都是静默的：查询正常返回，只是多了一行不该有的，
+        //   ②③④⑤ 每一个漏掉都是静默的：查询正常返回，只是多了一行不该有的，
         //   然后在结算那一刻变成「过期权益被发出去」或「余额扣成负数」。
         assertEquals(1, result.size(),
                 "只应该剩 1 份可用，实际 " + result.size()
@@ -465,6 +475,9 @@ class MemberPackageMapperTest {
         assertTrue(!got.contains(locked.getId()), "被锁定的不该出现");
         assertTrue(!got.contains(expired.getId()), "过期的不该出现");
         assertTrue(!got.contains(drained.getId()), "余量为 0 的不该出现");
+        // ★ 少了 effective_from 这一条的话，「下月 1 日起生效」的包今天就能抵扣 ——
+        //   用户会看到一张自己还没开始用的卡被扣掉了，而且全程没有报错
+        assertTrue(!got.contains(notYet.getId()), "还没生效的不该出现");
     }
 
     @Test
