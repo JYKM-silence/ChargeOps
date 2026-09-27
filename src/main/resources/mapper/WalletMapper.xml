@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.chargeops.mapper.WalletMapper">
+
+    <sql id="Base_Column_List">
+        id, member_id, balance, frozen_amount, total_recharge, version, create_time, update_time
+    </sql>
+
+    <select id="getByMemberId" resultType="com.chargeops.entity.Wallet">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM wallet
+        WHERE member_id = #{memberId}
+    </select>
+
+    <!--
+      ★ INSERT IGNORE：已存在时静默跳过（影响 0 行），靠 uk_wallet_member 去重。
+        不用「先 SELECT 再决定插不插」—— 那是 TOCTOU，两个并发的首次充值会同时
+        查到「没有钱包」然后都插入，其中一个撞唯一键抛异常。
+
+      ★ 没有 @AutoFill 可标：wallet 表没有 create_user / update_user 列，那个插件
+        要求四个审计 setter 全在，缺一个直接抛异常。两个时间由 Service 显式给。
+    -->
+    <insert id="insertIgnore" useGeneratedKeys="true" keyProperty="id">
+        INSERT IGNORE INTO wallet (member_id, balance, frozen_amount, total_recharge,
+                                   version, create_time, update_time)
+        VALUES (#{memberId}, #{balance}, #{frozenAmount}, #{totalRecharge},
+                #{version}, #{createTime}, #{updateTime})
+    </insert>
+
+    <!--
+      ★ 没有余额上限条件（不像 freeze 那样带 balance >= ?）：入账永远允许，
+        这是它和所有出账方向的根本区别。
+
+      ★ total_recharge 只增不减 —— 它记的是「充过多少」，不是「现在有多少」。
+        退款不走这里，也不回退它。
+    -->
+    <update id="recharge">
+        UPDATE wallet
+        SET balance = balance + #{amount},
+            total_recharge = total_recharge + #{amount},
+            version = version + 1,
+            update_time = #{updateTime}
+        WHERE member_id = #{memberId}
+    </update>
+
+    <!--
+      ★ 和 recharge 的唯一区别：不动 total_recharge —— 那是个历史事实，
+        被退款回退会让这个数字随消费和退款来回跳。
+    -->
+    <update id="credit">
+        UPDATE wallet
+        SET balance = balance + #{amount},
+            version = version + 1,
+            update_time = #{updateTime}
+        WHERE member_id = #{memberId}
+    </update>
+
+    <!--
+      ★★ WHERE balance >= #{amount} 是唯一的余额判据，影响行数 0 = 余额不足。
+
+        绝不能写成「先 SELECT 读 balance，判断够了再 UPDATE」：读到 100、此刻
+        另一线程扣掉 90、然后照 100 算 —— 余额变成负数。MySQL 在行锁保护下完成
+        「判断 + 修改」，中间状态不会被别的线程看到。
+
+      ★ balance 和 frozen_amount 一减一加，总额不变：冻结**不是**扣款，
+        它只是把钱挪到一个不能被别的订单用掉的格子里。
+    -->
+    <update id="freeze">
+        UPDATE wallet
+        SET balance = balance - #{amount},
+            frozen_amount = frozen_amount + #{amount},
+            version = version + 1,
+            update_time = #{updateTime}
+        WHERE member_id = #{memberId}
+          AND balance &gt;= #{amount}
+    </update>
+
+    <!--
+      ★ WHERE frozen_amount >= #{amount} 挡住「解冻得比冻的还多」：少了它，
+        一个重复的取消请求会把余额凭空变大，而且不会报错。
+
+      ★ 真正的幂等靠 wallet_transaction 的 uk(order_id, type)，这里只保证
+        「即使被调了，也不会把数字算错」。
+    -->
+    <update id="releaseFrozen">
+        UPDATE wallet
+        SET frozen_amount = frozen_amount - #{amount},
+            balance = balance + #{amount},
+            version = version + 1,
+            update_time = #{updateTime}
+        WHERE member_id = #{memberId}
+          AND frozen_amount &gt;= #{amount}
+    </update>
+
+    <!--
+      ★ 结算的正确顺序是**先 releaseFrozen 再 deduct**，不能反过来：先扣的话钱还在
+        冻结里，balance 可能不够，一笔本该成功的结算会被拒。
+
+      ★ 扣款失败（影响 0 行）时调用方抛异常让整个事务回滚，前面那次 releaseFrozen
+        也会一起撤销，钱包回到冻结状态 —— 钱没丢，只是这笔订单结算不了，
+        该进 status=9 异常挂账，由人工处理。
+    -->
+    <update id="deduct">
+        UPDATE wallet
+        SET balance = balance - #{amount},
+            version = version + 1,
+            update_time = #{updateTime}
+        WHERE member_id = #{memberId}
+          AND balance &gt;= #{amount}
+    </update>
+
+</mapper>

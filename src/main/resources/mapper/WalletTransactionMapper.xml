@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.chargeops.mapper.WalletTransactionMapper">
+
+    <sql id="Base_Column_List">
+        id, transaction_no, member_id, order_id, type, amount,
+        balance_before, balance_after, frozen_before, frozen_after,
+        remark, create_time
+    </sql>
+
+    <!--
+      ★★ 这条 INSERT 撞 uk_txn_order_type 是**预期内的结果**，不是错误。
+        调用方（WalletServiceImpl）必须 catch DuplicateKeyException 并当作
+        「这笔已经做过了」来处理，而不是把异常抛给用户 —— 支付回调重放、
+        设备重复上报、定时任务补扫都会走到这里。
+
+      ★ 四个 before/after 快照由调用方算好传进来，不由 SQL 自己算：值来自
+        「先 UPDATE 后 SELECT」读到的真实结果，这样并发下两个订单的流水首尾相连，
+        不会两笔都记同一个 before。
+    -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO wallet_transaction (transaction_no, member_id, order_id, type, amount,
+                                        balance_before, balance_after,
+                                        frozen_before, frozen_after,
+                                        remark, create_time)
+        VALUES (#{transactionNo}, #{memberId}, #{orderId}, #{type}, #{amount},
+                #{balanceBefore}, #{balanceAfter},
+                #{frozenBefore}, #{frozenAfter},
+                #{remark}, #{createTime})
+    </insert>
+
+    <!--
+      ★ 倒序：最近的在最上面，这是账单类界面的默认预期。
+        走 idx_txn_member_time；分页由 PageHelper 接管，不在 SQL 里写 LIMIT。
+    -->
+    <select id="listByMember" resultType="com.chargeops.entity.WalletTransaction">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM wallet_transaction
+        WHERE member_id = #{memberId}
+        ORDER BY create_time DESC, id DESC
+    </select>
+
+    <!-- 走 uk_txn_order_type，等值两列全覆盖 -->
+    <select id="getByOrderAndType" resultType="com.chargeops.entity.WalletTransaction">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM wallet_transaction
+        WHERE order_id = #{orderId}
+          AND type = #{type}
+    </select>
+
+</mapper>
