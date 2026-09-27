@@ -12,17 +12,10 @@ import com.chargeops.exception.ParamErrorException;
  * <p>{@link #OCCUPIED 2已占用} 和 {@link #CHARGING 3充电中} <b>归订单状态机所有，
  * 管理端接口必须拒绝手工设置</b>。原因不是「权限」，而是这两个值
  * <b>不是独立的字段，是订单的存在性在枪上的投影</b>：
- *
- * <ul>
- *   <li>手工设成 3 会凭空造出一把「充电中」但没有订单的枪。
- *       用户扫它启动充电时，条件更新
- *       {@code WHERE status=1 AND current_order_id IS NULL} 不匹配，
- *       得到「该枪正在使用中」—— 而实际上没人在用，
- *       运维看着界面上的「充电中」也不知道该怎么恢复</li>
- *   <li>手工设成 2 会直接和 {@code uk_connector_current_order} 的语义打架：
- *       那把枪的 {@code current_order_id} 到底是 NULL 还是某个订单？
- *       唯一索引约束的是后者，而 2 的语义在界面暗示前者</li>
- * </ul>
+ * 手工设成 3 会凭空造出一把「充电中」但没有订单的枪 —— 用户扫它启动充电时，
+ * 条件更新 {@code WHERE status=1 AND current_order_id IS NULL} 不匹配，
+ * 得到「该枪正在使用中」，而实际上没人在用，运维看着界面也不知道怎么恢复；
+ * 手工设成 2 则会直接和 {@code uk_connector_current_order} 的语义打架。
  *
  * <p>允许管理员设置的只有 {@link #OFFLINE 0}、{@link #IDLE 1}、
  * {@link #FAULT 4}、{@link #MAINTENANCE 5}。
@@ -74,10 +67,9 @@ public enum ConnectorStatus {
     /**
      * 这个状态是否允许由管理端接口手工设置
      *
-     * <p>把判断收进枚举，是为了让「哪些值归订单状态机所有」这件事
-     * 只有一处定义。散在 Service 里的 {@code if (status == 2 || status == 3)}
-     * 迟早会和别处的判断不一致 —— 而这类不一致的表现是
-     * 「某条路径能绕过限制把枪设成充电中」，不会报错。
+     * <p>把判断收进枚举，是为了让「哪些值归订单状态机所有」只有一处定义 ——
+     * 散在 Service 里的 {@code if (status == 2 || status == 3)} 迟早会和别处不一致，
+     * 而这类不一致的表现是「某条路径能绕过限制把枪设成充电中」，不会报错。
      */
     public boolean isAdminSettable() {
         return this != OCCUPIED && this != CHARGING;

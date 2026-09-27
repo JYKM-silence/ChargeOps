@@ -5,11 +5,9 @@
 
     <!--
       ★★ 这份 XML 与 Station/Charger/TariffTemplate 那几份的关键区别：
-      <b>没有 create_user / update_user</b>。
-
-      tariff_rule 表只有两个审计时间列，所以这里<b>不能</b>出现
-      #{createUser} / #{updateUser}，Mapper 接口上也<b>不能</b>标 @AutoFill。
-      两个时间列由 TariffTemplateServiceImpl.saveRules 显式 set 之后传进来。
+      <b>没有 create_user / update_user</b>。tariff_rule 表只有两个审计时间列，
+      所以这里<b>不能</b>出现 #{createUser} / #{updateUser}，接口上也<b>不能</b>标
+      @AutoFill。两个时间列由 TariffTemplateServiceImpl.saveRules 显式 set 后传进来。
     -->
     <sql id="Base_Column_List">
         id, template_id, period_type, start_time, end_time,
@@ -18,12 +16,9 @@
     </sql>
 
     <!--
-      某个模板的全部规则。
-
       ★ ORDER BY start_time 而不是 seq —— 见接口的 listByTemplateId 注释：
         零填充的 "HH:mm:ss" 字典序 = 时间序，而 '24:00:00' 恰好排最后。
-        末段能排在最后，这件事本身就是它在字符串里必须写成 '24:00:00'
-        而不是 '00:00:00' 的又一个理由。
+        末段能排在最后，本身就是它在字符串里必须写成 '24:00:00' 的又一个理由。
     -->
     <select id="listByTemplateId" resultType="com.chargeops.entity.TariffRule">
         SELECT
@@ -34,16 +29,13 @@
     </select>
 
     <!--
-      批量写入。
+      ★ <b>没有 useGeneratedKeys</b>：tariff_rule.id 不被任何表引用，回填了也没人用。
+        见接口的类注释第四节。
 
-      ★ <b>没有 useGeneratedKeys</b>：tariff_rule.id 不被任何表引用，
-        回填了也没有人用。见接口的类注释第四节。
-
-      ★ ★ start_time / end_time 是 VARCHAR 传进去、MySQL 隐式转成 TIME 列。
+      ★★ start_time / end_time 是 VARCHAR 传进去、MySQL 隐式转成 TIME 列。
         '24:00:00' 能通过这个转换（它是有符号时长不是时刻，见 TimeCodec），
         但这条路径和「SQL 字面量写 '24:00:00'」是两条不同的代码路径 ——
-        数据库里的种子数据能存下 24:00:00，<b>不能证明</b>这里也能。
-        这是 TariffRuleMapperTest 里必须有一条断言的原因。
+        种子数据能存下 24:00:00，<b>不能证明</b>这里也能，所以测试里必须有一条断言。
     -->
     <insert id="batchInsert">
         INSERT INTO tariff_rule (template_id, period_type, start_time, end_time,

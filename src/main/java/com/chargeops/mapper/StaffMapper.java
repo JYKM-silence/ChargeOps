@@ -20,20 +20,11 @@ import org.apache.ibatis.annotations.Select;
  * </table>
  *
  * <p>为什么不用「一个方法查全字段，调用方自己注意别返回出去」：
- * 那是把安全性寄托在<b>每一个调用方都记得</b>这件事上。
- * 而 {@code getById} 这种名字看起来就是「查一个人」，
- * 谁都可能顺手拿它去填一个返回给前端的对象。
- *
- * <p>拆成两个方法之后，「查密码」这件事在调用点上是<b>显式可见</b>的 ——
- * code review 时看到 {@code getByUsername} 就会多问一句「这里为什么需要密码」。
- * 让危险的操作用一个更扎眼的名字，比在文档里写一句「注意不要……」有效得多。
- *
- * <p><b>为什么用 {@code @Mapper} 而不是在启动类上 {@code @MapperScan}：</b>
- * 两种都能用。{@code @Mapper} 标在接口上，好处是「这个接口是 Mapper」
- * 这件事和接口本身放在一起，移动或复制文件时不会漏；
- * {@code @MapperScan} 则要求在启动类上维护一个包路径字符串，
- * 改了包名而忘了改它，表现是启动时报
- * 「找不到 StaffMapper 这个 Bean」—— 一个不会指向上面的报错。
+ * 那是把安全性寄托在<b>每一个调用方都记得</b>这件事上 —— 而
+ * {@code getById} 这种名字看起来就是「查一个人」，谁都可能顺手拿它
+ * 去填一个返回给前端的对象。拆成两个方法之后，「查密码」这件事在调用点上是
+ * <b>显式可见</b>的：code review 时看到 {@code getByUsername}
+ * 就会多问一句「这里为什么需要密码」。
  */
 @Mapper
 public interface StaffMapper {
@@ -48,12 +39,6 @@ public interface StaffMapper {
      * 方法直接返回 {@code Staff} 而不是 {@code List<Staff>}，
      * 免去调用方写 {@code list.get(0)} 和空判断。
      * 返回值是 {@code null} 表示账号不存在，这是正常分支不是异常。
-     *
-     * <p>用 {@code @Select} 写在注解上而没有放进 XML：这条 SQL 是固定的、
-     * 没有动态条件、只有一行。为了它单独去 XML 里找一段
-     * {@code <select id="getByUsername">}，读者要在两个文件之间跳。
-     * <b>简单的固定 SQL 放注解，带动态条件的放 XML</b>，
-     * 这样每种 SQL 都在「最容易被看到的地方」。
      */
     @Select("SELECT id, username, password, name, phone, sex, id_number, role, station_id, status, "
             + "create_time, update_time, create_user, update_user "
@@ -78,9 +63,6 @@ public interface StaffMapper {
      *
      * <p>{@link AutoFill} 会在执行前把四个审计字段填进 {@code staff}，
      * 所以 XML 里的 {@code <insert>} 不需要写 {@code create_time} 的取值逻辑。
-     *
-     * <p>{@code useGeneratedKeys} 让自增主键回填到 {@code staff.id} ——
-     * 没有它的话插入后 id 仍然是 null，紧接着要用 id 做关联就会 NPE。
      */
     @AutoFill(OperationType.INSERT)
     void insert(Staff staff);

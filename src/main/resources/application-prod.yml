@@ -278,3 +278,12 @@ logging:
     #   「同一个线程处理了两个请求」这条线索是必须能看到的
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
     file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+# ============================================================================
+# 定时任务开关（prod）
+# ============================================================================
+# ★★ 值必须显式为 true —— 理由见 application-dev.yml 里同一段的注释：
+#    漏配不会报错，只会让后台任务静默地不跑。
+chargeops:
+  scheduling:
+    enabled: true

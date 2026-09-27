@@ -34,8 +34,7 @@ import java.util.stream.Collectors;
 /**
  * 站点计费绑定服务实现
  *
- * <p>这个类的核心是 {@link #resolveTemplateIdAt}，而它本轮<b>没有任何
- * 生产调用方</b> —— 它是为 P1c 准备的。所以它也是本类唯一值得写单测的地方。
+ * <p>核心是 {@link #resolveTemplateIdAt}（下单链路的入口），
  * 其余方法（增删改查）的形状和别的域一样。
  */
 @Service
@@ -50,12 +49,10 @@ public class StationTariffServiceImpl implements StationTariffService {
     /**
      * 错误消息里渲染时刻用的格式
      *
-     * <p>★ 和全局 Jackson 配置（{@code JacksonConfiguration}）保持同一串
-     * 模式，但它<b>不是</b>从那里读来的 —— 一个是序列化配置，
-     * 一个是给人看的文案，两者的变更理由不同。
-     * 硬编码在这里的代价是「改全局格式时这里会漏改」，
-     * 而那个代价表现为一条消息里的日期格式和接口返回的不一致 ——
-     * 一个不会造成任何错误、但会让人困惑的小问题。
+     * <p>★ 和全局 Jackson 配置保持同一串模式，但<b>不是</b>从那里读来的：
+     * 一个是序列化配置，一个是给人看的文案，变更理由不同。
+     * 硬编码的代价是「改全局格式时这里会漏改」，表现为消息里的日期格式
+     * 和接口返回的不一致 —— 不会造成错误，只让人困惑。
      * 换来的好处是 Service 不依赖 Web 层的配置类。
      */
     private static final DateTimeFormatter API_TIME_FORMAT =
@@ -69,16 +66,12 @@ public class StationTariffServiceImpl implements StationTariffService {
         requireStation(stationTariffDTO.getStationId());
         TariffTemplate template = requireTemplate(stationTariffDTO.getTemplateId());
 
-        // ★ 停用的模板不能用于【新建】绑定。
+        // ★ 停用的模板不能用于【新建】绑定 —— status 的语义就是「这个模板还能不能
+        //   被新绑定」。不拦的话，停用就是一个不完整的操作：管理员停用了它，
+        //   但仍然有人能拿它去配新站点。
         //
-        //   这是 status 的语义决定的：「这个模板还能不能被新绑定」。
-        //   不拦的话，停用就变成一个不完整的操作 ——
-        //   管理员停用了它，但仍然有人能拿它去配新站点，然后问
-        //   「我不是停用了吗」。
-        //
-        //   ★ 注意这不影响【已经存在】的绑定：那些绑定有自己的行，
-        //   解析时不会经过这里。这正是「停用模板不会改变现有站点计费」
-        //   这个承诺的实现方式 —— 两条路径，两个判断。
+        //   ★ 这不影响【已经存在】的绑定：那些绑定有自己的行，解析时不经过这里 ——
+        //   「停用模板不会改变现有站点计费」这个承诺就是靠这两条路径实现的。
         if (StatusConstant.DISABLE.equals(template.getStatus())) {
             throw new DataConflictException(MessageConstant.TEMPLATE_DISABLED);
         }
@@ -136,12 +129,10 @@ public class StationTariffServiceImpl implements StationTariffService {
     public void delete(Long id) {
         requireBinding(id);
         stationTariffMapper.deleteById(id);
-        // ★ 删除没有守卫，和别的域不同 —— 因为绑定没有「子记录」，
-        //   而且删掉一条绑定不会让任何已有订单失去依据
-        //   （订单冻结的是模板 id，和这条绑定行无关）。
-        //   唯一的代价是丢掉一段历史：删掉之后再看 station_tariff，
-        //   那个时期就变成空白，事后追查老订单为什么用了这个价时没有依据。
-        //   所以常规退役手段是 status = 0 停用，见接口类注释。
+        // ★ 删除没有守卫，和别的域不同 —— 绑定没有「子记录」，而且删掉一条绑定
+        //   不会让任何已有订单失去依据（订单冻结的是模板 id，和这条绑定行无关）。
+        //   唯一的代价是丢掉一段历史：那个时期在 station_tariff 里变成空白，
+        //   事后追查老订单为什么用了这个价时没有依据。
         log.info("删除站点计费绑定：id={}", id);
     }
 
@@ -164,19 +155,14 @@ public class StationTariffServiceImpl implements StationTariffService {
     /**
      * ★★ 解析某站某时刻的模板 id，解析不出来就抛
      *
-     * <p>底层的 {@code resolveTemplateAt} 会返回 {@code null}（没有生效的绑定）。
-     * 本方法把它翻成 {@link TariffNotCoveredException}。
-     *
-     * <p><b>为什么是抛而不是返回 null</b>，见接口类注释第二节：
-     * 「返回 null 让调用方处理」和「用一个没人批准过的默认价」在
-     * 调用方写错时长得一模一样，而后者是一个静默的资金错误。
-     * 方法签名里根本没有 null 这个可能，所以 P1c 也就无法忘记检查它。
+     * <p>底层的 {@code resolveTemplateAt} 在「没有生效的绑定」时返回 {@code null}，
+     * 本方法把它翻成 {@link TariffNotCoveredException}。<b>为什么是抛而不是
+     * 返回 null</b>，见接口类注释第二节：方法签名里没有 null 这个可能，
+     * 所以调用方也就无法忘记检查它。
      *
      * <p>★ 查询本身走 {@code idx_station_tariff_lookup
-     * (station_id, status, effective_from, effective_to)} ——
-     * 列的顺序和 WHERE 条件的顺序完全一致。
-     *
-     * <p>★ <b>这条查询永久不缓存</b>，见接口类注释。
+     * (station_id, status, effective_from, effective_to)}，
+     * 列的顺序和 WHERE 条件的顺序完全一致。★ <b>这条查询永久不缓存</b>。
      */
     @Override
     public Long resolveTemplateIdAt(Long stationId, LocalDateTime at) {
@@ -190,10 +176,9 @@ public class StationTariffServiceImpl implements StationTariffService {
 
         StationTariff binding = stationTariffMapper.resolveTemplateAt(stationId, at);
         if (binding == null) {
-            // ★★ 这个日志的级别是 warn 而不是 info ——
-            //    它每出现一次，就有一个用户走到了「充不了电」这条路径上，
-            //    而原因是配置问题（站点没绑模板，或绑的模板已经过期）。
-            //    运维应该能从日志里发现这件事，而不是等用户来投诉。
+            // ★★ 级别是 warn 而不是 info —— 它每出现一次，就有一个用户走到了
+            //    「充不了电」这条路径上，而原因是配置问题（站点没绑模板，
+            //    或绑的模板已经过期）。运维应该能从日志里发现这件事。
             log.warn("站点在指定时刻没有生效的计费方案，stationId={}, at={}", stationId, at);
             throw new TariffNotCoveredException(MessageConstant.STATION_TARIFF_NOT_BOUND);
         }
@@ -230,40 +215,29 @@ public class StationTariffServiceImpl implements StationTariffService {
     /**
      * 生效区间校验：失效时刻必须<b>严格晚于</b>生效时刻
      *
-     * <p>★ 区间是<b>半开</b>的 {@code [effectiveFrom, effectiveTo)}：
-     * {@code effectiveFrom} 含、{@code effectiveTo} 不含。
-     * 于是 {@code effectiveTo == effectiveFrom} 是一个<b>空区间</b>——
-     * 它永远不会被 {@code resolveTemplateAt} 命中。
+     * <p>★ 区间是<b>半开</b>的 {@code [effectiveFrom, effectiveTo)}：{@code effectiveFrom}
+     * 含、{@code effectiveTo} 不含，于是 {@code effectiveTo == effectiveFrom} 是
+     * 一个<b>空区间</b>，永远不会被 {@code resolveTemplateAt} 命中。
      *
-     * <p><b>为什么要拦它，而不是「反正是空的，留着也无害」：</b>
-     * 一条永远不会生效的绑定，和一条正常绑定在列表页上<b>长得一模一样</b>。
-     * 运维建了它、看到它显示在列表里、以为配置好了，
-     * 而系统在该站点下单时会说「没有配置计费方案」。
-     * 那是一个「配置看起来是对的但系统说没有」的谜题，
-     * 排查它要花掉的时间远大于在这里多一行判断。
+     * <p><b>为什么要拦它：</b>一条永远不会生效的绑定，和一条正常绑定在列表页上
+     * <b>长得一模一样</b> —— 运维建了它、看到它显示在列表里、以为配置好了，
+     * 而系统在该站点下单时会说「没有配置计费方案」。排查这个谜题的时间
+     * 远大于在这里多一行判断。
      *
-     * <p>★★ <b>允许 {@code effectiveTo} 为 {@code null}（长期有效）——
-     * 而且那是最常见的情况。</b>所以这个方法的第一件事就是判空返回，
-     * 而不是直接调 {@code isAfter}。
+     * <p>★★ <b>允许 {@code effectiveTo} 为 {@code null}（长期有效），而且那是最常见
+     * 的情况</b>，所以这个方法的第一件事就是判空返回。这个判空<b>必须写在方法内部</b>，
+     * 不能靠调用点各自去判 —— 冒烟测试里真的踩到了：{@code bind} 一开始没判空，
+     * 于是「不填失效时刻」这个最常见的合法请求抛 {@code NullPointerException}，
+     * 被兜底分支翻成 HTTP 500，一个完全正常的操作看起来像服务挂了。
      *
-     * <p>★ 这个判空<b>必须写在这个方法里</b>，不能靠调用点各自去判。
-     * 冒烟测试里真的踩到了：{@code bind} 一开始没判空就直接调，
-     * 于是「不填失效时刻」这个最常见的合法请求抛
-     * {@code NullPointerException}，被兜底分支翻成 HTTP 500
-     * +「未知错误」—— 一个完全正常的操作看起来像服务挂了。
-     * 把判空放进方法内，任何一个调用点都不可能再忘。
+     * <p>★ 用 {@code isAfter} 而不是 {@code compareTo}：{@code LocalDateTime} 有纳秒
+     * 精度而 {@code datetime(3)} 只到毫秒，{@code compareTo} 比较「内存里的值」和
+     * 「库里的值」会踩到四舍五入的坑。这里两边同源、暂时安全，但保持这个习惯。
      *
-     * <p>★ 时刻用 {@code isAfter} 比较而不是 {@code compareTo} ——
-     * 因为 {@code LocalDateTime} 有纳秒精度，而 {@code datetime(3)} 只到毫秒。
-     * 用 {@code compareTo} 比较「内存里的值」和「库里的值」会踩到那个
-     * 四舍五入的坑。这里两边都来自同一个对象，暂时安全 ——
-     * 但保持用 {@code isAfter} 的习惯，它不需要读者去确认
-     * 「这两个值精度一样吗」。
-     *
-     * <p>★ 消息里的时刻用 {@code yyyy-MM-dd HH:mm:ss} 渲染，和全局
-     * Jackson 配置一致。直接用 {@code LocalDateTime.toString()} 会得到
-     * {@code 2026-07-01T00:00}（ISO 格式、秒被省略）——
-     * 那是<b>只有开发者才认得的形状</b>，而这条消息是给调接口的人看的。
+     * <p>★ 消息里的时刻用 {@code yyyy-MM-dd HH:mm:ss} 渲染：直接用
+     * {@code LocalDateTime.toString()} 会得到 {@code 2026-07-01T00:00}
+     * （ISO 格式、秒被省略），那是<b>只有开发者才认得的形状</b>，
+     * 而这条消息是给调接口的人看的。
      */
     private void assertEffectiveRange(LocalDateTime effectiveFrom, LocalDateTime effectiveTo) {
         if (effectiveTo == null) {
@@ -283,12 +257,10 @@ public class StationTariffServiceImpl implements StationTariffService {
      * <p>★ 绑定列表里只有 {@code templateId} 是<b>没有信息量的</b> ——
      * 没有人记得模板 7 是哪个价，而这正是管理员打开这个页面要回答的问题。
      *
-     * <p>★ 批量的理由同 {@code ChargerServiceImpl.toVos}：消除 N+1，
-     * 而且这里比那里更明显 —— 一个站点的一页绑定数通常不超过 5 条，
-     * 但那 5 条很可能指着 2 个模板，逐个查就是 5 次查询换 2 个答案。
+     * <p>★ 批量的理由同 {@code ChargerServiceImpl.toVos}：消除 N+1。
      *
-     * <p>★ 空集合必须先判掉：{@code <foreach>} 展开成 {@code IN ()}
-     * 是 SQL 语法错误，而「这个站点一条绑定都还没有」是<b>新建站点的默认状态</b>，
+     * <p>★ 空集合必须先判掉：{@code <foreach>} 展开成 {@code IN ()} 是 SQL 语法错误，
+     * 而「这个站点一条绑定都还没有」是<b>新建站点的默认状态</b>，
      * 所以这个分支比在别处更容易走到。
      */
     private List<StationTariffVO> toVos(List<StationTariff> bindings) {

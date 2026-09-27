@@ -42,6 +42,79 @@ spring:
       max-file-size: 10MB
       max-request-size: 20MB
 
+  # ==========================================================================
+  # Flyway 数据库迁移
+  # ==========================================================================
+  # 迁移文件在 classpath:db/migration/ 下：V1__init_schema.sql（19 张表）
+  # 和 V2__seed_data.sql（种子数据）。
+  #
+  # ★★ 这些配置是**环境无关**的（dev 和 prod 都要这样跑），所以放在这个文件里，
+  #    而连接信息在 application-dev.yml / application-prod.yml。
+  #
+  # ★★ baseline-on-migrate 是这里唯一真正承重的一行，必须理解它在做什么 ★★
+  #
+  #   它要解决的是「已经存在的库」：那些库是历史脚本建的，表都在，
+  #   但没有 flyway_schema_history 表。Flyway 碰到非空又没有历史表的库会
+  #   <b>直接拒绝启动</b>（"Found non-empty schema(s) but no schema history table"），
+  #   baseline-on-migrate 让它改成为这个库补一条 BASELINE 记录、版本记为
+  #   baseline-version，然后只执行版本号**大于**它的迁移。
+  #
+  #   ★ 于是已有库跳过 V1、执行 V2（V2 是 INSERT IGNORE，对已有种子是空操作）；
+  #     全新库从 V1 开始跑。两条路径都收敛到同一个终态。
+  #
+  #   ★★ 但 baseline 是「相信」，不是「校验」。★★ 已有库会被**假定**成 V1 的样子，
+  #     Flyway 不会去核对它。如果那个库还留着某次手工改表留下的漂移，
+  #     V1 永远不会执行，漂移原封不动地留下来。
+  #     所以引入迁移时要**手工做一次「开发库 vs V1」的比对**，
+  #     否则买到只是「从今往后」的保护。
+  #
+  # ★ validate-on-migrate（默认 true，这里显式写出）：
+  #     把「有人改了已应用的迁移」变成一次启动失败。
+  #     ★ 规则：已应用的迁移永不修改，要改表结构就加 V3__xxx.sql。
+  #
+  # ★ clean-disabled（Flyway 9 起默认 true）：
+  #     clean 会 DROP 掉整个 schema。在一个 baseline 过的开发库上误触发
+  #     等于一把清空所有测试数据。显式写出来是为了让「它被关着」这件事可见 ——
+  #     ★ 也永远不要设 clean-on-validation-error。
+  # ★★ 这里**不能**写成 `spring.flyway:` ★★
+  #
+  #   本文件第 33 行已经是 `spring:`，所以下面这两行是「spring 的 flyway 键」。
+  #   写成 `spring.flyway:` 的话属性名会变成 `spring.spring.flyway.enabled` ——
+  #   Spring 不认识它，**整块配置一条都不生效**，而且不会有任何警告。
+  #
+  #   ★ 这个坑是真的踩过：当时整块都写着 `spring.flyway:`，
+  #     表现是启动直接失败
+  #         Found non-empty schema(s) `chargeops` but no schema history table.
+  #         Use baseline() or set baselineOnMigrate to true
+  #     —— 报错让人以为「baseline-on-migrate 没配对」，而真正的原因是
+  #     **那一行从来没被读到**。`locations` 之所以看着像生效了，
+  #     是因为它的默认值恰好也是 classpath:db/migration。
+  #
+  #   ★ 判断方法：改完启动一次，日志里出现
+  #         Successfully baselined schema with version: 1
+  #     或者 `Schema `chargeops` is up to date` 才算配置真的被读到了。
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 1
+    validate-on-migrate: true
+    clean-disabled: true
+    locations: classpath:db/migration
+
+  # ==========================================================================
+  # 定时任务线程池
+  # ==========================================================================
+  # ★ Boot 默认的 ThreadPoolTaskScheduler **只有一个线程**。
+  #   ChargeOpsApplication 的类注释里规划了四个定时任务（待启动订单超时取消、
+  #   设备离线巡检、卡在待结算的订单补偿结算、支付失败兜底扫描）——
+  #   池大小为 1 时它们会互相排队，一个慢任务会推迟所有其它任务，
+  #   而表现只是「某个任务偶尔没跑」，很难联想到是线程池。
+  task:
+    scheduling:
+      pool:
+        size: 4
+      thread-name-prefix: chargeops-sched-
+
 # ============================================================================
 # MyBatis
 # ============================================================================
@@ -176,6 +249,53 @@ chargeops:
     #   图片会变成「必须登录才能看」，而静态资源请求不会带 token，
     #   结果是图片全部裂掉，且日志里一条报错都没有
     url-path: /img
+
+  # ==========================================================================
+  # 定时任务
+  # ==========================================================================
+  # ★ 每个任务的**开关**（chargeops.scheduling.enabled）在
+  #   application-dev.yml / application-prod.yml 里，不在这里 ——
+  #   因为这里放的是『多久扫一次』这种业务参数，而『这个环境跑不跑任务』
+  #   是环境属性。（测试环境靠 src/test/resources/application.properties 关掉。）
+  scheduled:
+    # 支付失败兜底扫描：多久扫一次，以及「待支付多久算超时」
+    #
+    # ★ 用 fixedDelay 而不是 cron：fixedDelay 保证**上一次跑完之后**再等这么久，
+    #   一次慢扫描不会和自己重叠。cron 是「到点就跑」，扫描耗时超过间隔时
+    #   同一个任务会并发地跑起来 —— 而这个任务是会写数据库的。
+    pay-timeout-scan-ms: 300000
+
+    # ★ 这个值决定「用户有多久可以慢慢去充值」，必须远大于任何合理的思考时间。
+    #   扫早了的后果不是「提醒用户」，而是把这笔订单打成 6 支付失败 ——
+    #   虽然 6 仍然可以支付（markPaid 同时接受 4 和 6），但会在订单上留下
+    #   一次本不该有的失败记录，用户看到的是「我还没付款它就失败了」。
+    #   15 分钟：超过这个时间的待支付订单，几乎都不是「正在操作」。
+    pay-timeout-minutes: 15
+
+    # 单次扫描最多处理多少笔。★ 有上限是必要的：一次把几千笔待支付订单
+    # 全捞进内存、逐笔开事务去写，会在数据库上形成一个长尾，
+    # 而扫描本身是固定间隔重复的，剩下的下一轮会处理掉。
+    pay-timeout-batch-size: 200
+
+    # --------------------------------------------------------------------------
+    # 权益过期落库（MemberPackageExpireJob）
+    # --------------------------------------------------------------------------
+    # 把 status 还停在 1 生效中、但 expire_time 已经过去的权益改成 3 已过期。
+    #
+    # ★ 它和上面的支付扫描的紧迫性完全不同，所以间隔可以（也应该）宽松得多：
+    #   没有任何人在等它 —— 读路径本来就带 expire_time > now 兜底，
+    #   一份状态陈旧的过期权益照样不会被发出去。
+    #   它的意义是让「运营看到的过期数量」和「车主看到的灰态」正确。
+    #
+    #   30 分钟：比支付扫描慢 6 倍，但仍然快到「用户点开列表时status是对的」。
+    #   改大到几小时也不会出错，只是运营的统计会滞后。
+    package-expire-scan-ms: 1800000
+
+    # 单轮最多落库多少份。★ 这是**一条 UPDATE ... LIMIT n**，不是逐笔开事务，
+    #   所以它不占堆内存，占的是行锁和 undo log —— 取值可以远大于上面的 200。
+    #   第一次上线时库里可能躺着两年的过期数据（在 V3 之前，
+    #   没有任何代码写过 status = 3），收敛速度直接取决于这个数。
+    package-expire-batch-size: 5000
 
 # ============================================================================
 # 接口文档（springdoc）

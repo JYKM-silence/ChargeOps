@@ -6,11 +6,10 @@
     <!--
       ★ 这份 XML 里最要紧的一个决定：<sql id="Base_Column_List"> 里没有 password。
 
-      它被 getById / insert 的返回 / update 共用。登录用的 getByUsername
-      写在接口的 @Select 注解上（唯一需要密码的那条路径），所以这条清单
-      少一列不会影响登录。
+      它被 getById / insert 的返回 / update 共用；登录用的 getByUsername 写在接口的
+      @Select 上（唯一需要密码的那条路径），所以这条清单少一列不会影响登录。
 
-      这样设计的效果是：只要走 XML 这条路，返回的 Staff 对象里 password 恒为 null。
+      效果：只要走 XML 这条路，返回的 Staff 对象里 password 恒为 null ——
       就算哪天有人写错了把一个实体直接返回给前端，泄露出去的也只是一个 null 字段。
       —— 安全措施最好是「默认就安全」，而不是「靠自己记得」。
     -->
@@ -21,15 +20,11 @@
     </sql>
 
     <!--
-      不需要 <resultMap>：application.yml 里开了
-      mybatis.configuration.map-underscore-to-camel-case=true，
-      station_id 会自动映射到 stationId。
+      不需要 <resultMap>：map-underscore-to-camel-case=true 已经把
+      station_id → stationId 这类映射做掉了（它只处理「下划线 → 驼峰」这一种差异）。
 
-      ★ 但要注意它只处理「下划线 → 驼峰」这一种差异。
-      如果列名和属性名是别的差异（比如列 create_time 想映射到属性 createdAt），
-      自动映射帮不上忙，那时才需要写 resultMap。
-      P0 阶段不预写 resultMap，因为它是一份要跟着表结构同步维护的清单，
-      没有实际需要时写它只是多一个会和 DDL 不一致的地方。
+      ★ 不预写 resultMap：它是一份要跟着表结构同步维护的清单，没有实际需要时
+        写它只是多一个会和 DDL 不一致的地方。
     -->
 
     <select id="getById" resultType="com.chargeops.entity.Staff">
@@ -40,16 +35,12 @@
     </select>
 
     <!--
-      新增：useGeneratedKeys + keyProperty 把自增主键回填到对象的 id 属性。
+      ★ 审计四列不在这里写取值逻辑，由 AutoFillInterceptor 在方法执行前填进对象 ——
+        所以下面直接取 #{createTime} 这样的属性值。
 
-      ★ 没有它的话，staff.getId() 在插入后仍然是 null。
-
-      ★ 审计四列（create_time/create_user/update_time/update_user）不在这里写，
-        由 AutoFillAspect 在方法执行前填进对象 —— 所以下面直接取 #{createTime} 这样的属性值。
-        这就是为什么 Mapper 接口上的 @AutoFill 不能删：
-        删了注解，这里的 #{createTime} 全部取到 null，
-        而 DDL 里 create_time 有 DEFAULT，update_time 有 ON UPDATE 默认值，
-        表现是「新增成功但 create_user 是空的」—— 不会报任何错。
+      ★★ 接口上的 @AutoFill 不能删：删了这里全部取到 null，而这是全列插入 ——
+         DDL 的 DEFAULT 只在列没出现在语句里时才生效，所以 create_time / update_time
+         会撞 NOT NULL 报 errno 1048，插入直接失败。
       -->
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO staff (username, password, name, phone, sex, id_number, role, station_id, status,
@@ -60,18 +51,11 @@
     </insert>
 
     <!--
-      修改：<set> 只更新传了值的字段，<if> 保证 null 的字段不出现在 SQL 里。
+      ★ 为什么必须用 <set> + <if> 而不是把整行都 update 一遍：后者会把实体里没设置的
+        字段写成 null —— 前端只想改手机号时，name 会被清掉。
 
-      ★ 为什么必须用 <set> + <if> 而不是把整行都 update 一遍：
-        后者会把实体里没设置的字段写成 null。比如前端只想改手机号，
-        DTO 里只有 phone，如果 SQL 写死 "SET name=#{name}, phone=#{phone}, ..."，
-        那么 name 会被写成 null，把姓名清掉了。
-        <set> 标签还会自动去掉最后一个多余的逗号 —— 用 <trim> 手动处理也可以，
-        但容易写错，用 <set> 是标准做法。
-
-      ★ status 用 StatusConstant.ENABLE/DISABLE 那种 0/1 值，
-        所以判断条件只能是 != null，不能写 != ''（Integer 和空串比较永远为真，
-        是个隐蔽的坑）。
+      ★ status 是 0/1，判断条件只能是 != null，不能写 != ''（Integer 和空串比较
+        恒为 false，条件失效而 SQL 照常执行，是个隐蔽的坑）。
       -->
     <update id="update">
         UPDATE staff
@@ -85,8 +69,7 @@
             <if test="role != null">role = #{role},</if>
             <if test="stationId != null">station_id = #{stationId},</if>
             <if test="status != null">status = #{status},</if>
-            <!-- 审计两列由 AutoFillAspect 填，这里无条件带上。
-                 它们一定是非 null 的（切面保证），所以不需要 <if> -->
+            <!-- 审计两列由 AutoFillInterceptor 填，一定非 null，所以无条件带上 -->
             update_time = #{updateTime},
             update_user = #{updateUser}
         </set>

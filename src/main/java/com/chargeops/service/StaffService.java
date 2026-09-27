@@ -12,14 +12,9 @@ import com.chargeops.vo.StaffVO;
  * 入参出参都是自己定义的类型，这是「Controller 只做协议转换、
  * Service 只做业务」这条分层规则的落点。
  *
- * <p>好处在测试时最明显：测试 {@code login} 不需要启动 Spring、
- * 不需要造一个 HTTP 请求，直接 {@code new StaffServiceImpl(mockMapper, ...)}
- * 然后断言抛的是不是 {@code PasswordErrorException} 就行。
- * 如果 Service 方法签名里有 {@code HttpServletRequest}，这件事就做不到了。
- *
- * <p>充电业务后面会加大量方法（站点、桩、枪、套餐、订单、钱包），
- * 那些方法更要守住这条线 —— 一旦有方法开始接收 Servlet 类型，
- * 整个 Service 层的可测试性就一起消失了。
+ * <p>好处在测试时最明显：测试 {@code login} 不需要启动 Spring、不需要造一个
+ * HTTP 请求，直接 {@code new StaffServiceImpl(mockMapper, ...)} 然后断言抛的是不是
+ * {@code PasswordErrorException} 就行。方法签名里一旦出现 Servlet 类型就做不到了。
  */
 public interface StaffService {
 

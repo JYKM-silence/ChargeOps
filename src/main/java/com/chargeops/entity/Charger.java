@@ -22,18 +22,15 @@ import java.time.LocalDateTime;
  * 会一路走到数据库，报一个 {@code SQLIntegrityConstraintViolationException} ——
  * 那是 <b>HTTP 500</b>，而它明明是一个可以指名的入参缺失（应该是 400）。
  *
- * <p>列类型 {@code decimal(6,2)}，{@link BigDecimal}：
- * {@code 7.35} 这种非整数功率用 {@code double} 存会变成 {@code 7.3499999...}，
- * 而它会被前端直接显示成「额定功率 7.3499999 kW」。
+ * <p>列类型 {@code decimal(6,2)}，{@link BigDecimal}：{@code 7.35} 这种非整数功率
+ * 用 {@code double} 存会变成 {@code 7.3499999...}，而前端会把它原样显示出来。
  *
  * <h2>★ 二、{@code gunCount} 是冗余列，必须由 Service 主动维护</h2>
  *
- * <p>它等于「本桩下 {@code connector} 的行数」。保留冗余的理由是列表展示：
- * 桩列表要显示「A区-01（2 枪）」，不冗余的话每一行都要带一个子查询或 join。
- *
- * <p>但冗余列的代价是<b>它会漂移</b>。所以枪的新增/删除必须在<b>同一个事务里</b>
- * 调 {@code ConnectorMapper.refreshGunCount}（一条 {@code UPDATE ... SET gun_count =
- * (SELECT COUNT(*) ...)}）。不维持的话，表现是「页面上显示 2 枪，点进去只有 1 把」，
+ * <p>它等于「本桩下 {@code connector} 的行数」。保留冗余是为了列表展示
+ * （显示「A区-01（2 枪）」时不用每行带一个子查询）。代价是<b>它会漂移</b>：
+ * 枪的新增/删除必须在<b>同一个事务里</b>调 {@code ConnectorMapper.refreshGunCount}。
+ * 不维持的话，表现是「页面上显示 2 枪，点进去只有 1 把」，
  * 而且会一直漂到有人手工数枪才会被发现。
  *
  * <h2>★ 三、{@code type} 不是分类标签，是业务事实</h2>
@@ -44,9 +41,8 @@ import java.time.LocalDateTime;
  *
  * <h2>★ 四、{@code status} 是枪状态的汇总</h2>
  *
- * <p>{@code 0离线 1在线空闲 2充电中 3故障 4维护中}。桩本身没有「独立意志」：
- * 它不空闲是因为它的枪都在忙。这个字段在 P1a 只读不写，
- * 由 P1d 的设备上报驱动。
+ * <p>桩本身没有「独立意志」：它不空闲是因为它的枪都在忙。
+ * 这个字段在 P1a 只读不写，由 P1d 的设备上报驱动。
  */
 @Data
 @Builder
@@ -72,18 +68,16 @@ public class Charger implements Serializable {
     private String model;
 
     /**
-     * 额定功率 kW。★ <b>NOT NULL 且库无默认值</b>
+     * 额定功率 kW。★ <b>NOT NULL 且库无默认值</b>（{@code decimal(6,2)}）
      *
-     * <p>列类型 {@code decimal(6,2)}，所以上限是 9999.99 kW。
-     * 创建时不给值就是 500 而不是 400 —— DTO 层必须拦。
+     * <p>创建时不给值就是 500 而不是 400 —— DTO 层必须拦。
      */
     private BigDecimal ratedPowerKw;
 
     /**
      * 枪数。★ <b>冗余自 {@code connector}，由 Service 在同事务内刷新</b>
      *
-     * <p>不是 {@code <if>} 条件字段的候选：它不该由客户端直接设置，
-     * 所以它<b>不应该出现在 CreateDTO / UpdateDTO 里</b>。
+     * <p>它<b>不应该出现在 CreateDTO / UpdateDTO 里</b>——
      * 写进 DTO 就等于给客户端开了一条让冗余列失真的路径。
      */
     private Integer gunCount;
@@ -95,10 +89,8 @@ public class Charger implements Serializable {
      * 最后一次心跳时间
      *
      * <p>离线巡检用：{@code WHERE last_heartbeat_time < NOW() - INTERVAL 5 MINUTE
-     * AND status <> 0}。索引 {@code idx_charger_heartbeat} 的第一列就是它 ——
-     * 范围条件必须放在最左列，所以时间在前。
-     *
-     * <p>P1a 不写这个字段，留给 P1d 的设备上报。
+     * AND status <> 0}。索引 {@code idx_charger_heartbeat} 把时间放在第一列，
+     * 因为范围条件必须放在最左列。P1a 不写这个字段，留给 P1d 的设备上报。
      */
     private LocalDateTime lastHeartbeatTime;
 

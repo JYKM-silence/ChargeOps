@@ -26,9 +26,8 @@ import com.chargeops.vo.StationVO;
  *
  * <ul>
  *   <li><b>{@code create} 返回 {@code Long} 而不是 {@code void}。</b>
- *       MyBatis 的 {@code useGeneratedKeys} 本来就把自增 id 回填到了实体上，
- *       返回它是<b>顺手</b>的；而调用方（前端）拿到 id 就能直接跳转到详情页，
- *       不需要再发一次「按名字查刚建的那个」—— 那个查询还要处理同名的情况。</li>
+ *       调用方（前端）拿到 id 就能直接跳转到详情页，不需要再发一次
+ *       「按名字查刚建的那个」—— 那个查询还要处理同名的情况。</li>
  *
  *   <li><b>id 走参数，不进 DTO。</b>{@code update} 的 id 是独立的方法参数，
  *       而不是 {@code XxxUpdateDTO} 里的一个字段。这样客户端就<b>无法</b>
@@ -38,10 +37,9 @@ import com.chargeops.vo.StationVO;
  * <h2>★ 每个写方法都要说清楚它抛什么</h2>
  *
  * <p>{@code GlobalExceptionHandler} 只有一个
- * {@code @ExceptionHandler(BaseException.class)} 分支，
- * 所以业务异常的分类完全由<b>抛出的类型</b>决定，而不是由消息文本。
- * 接口的 javadoc 是唯一能让调用方（和半年后的自己）知道
- * 「哪些情况要处理」的地方。
+ * {@code @ExceptionHandler(BaseException.class)} 分支，所以业务异常的分类
+ * 完全由<b>抛出的类型</b>决定，而不是由消息文本 —— 接口的 javadoc
+ * 是唯一能让调用方知道「哪些情况要处理」的地方。
  */
 public interface StationService {
 

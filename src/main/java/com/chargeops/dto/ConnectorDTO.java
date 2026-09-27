@@ -16,52 +16,45 @@ import java.math.BigDecimal;
  * <h2>★★ 一、四个字段不在 DTO 里，每个都是一个已经踩过的坑</h2>
  *
  * <ol>
- *   <li><b>没有 {@code stationId}</b> —— 它是 DDL 明写的冗余列，
- *       值等于 {@code charger.station_id}。由 Service 从所属桩
- *       <b>派生</b>填入（{@code chargerMapper.getById(chargerId).getStationId()}）。
+ *   <li><b>没有 {@code stationId}</b> —— 它是 DDL 明写的冗余列，值等于
+ *       {@code charger.station_id}，由 Service 从所属桩<b>派生</b>填入。
  *       ★ 让客户端能传它，就等于允许造出一把「挂在 A 站的桩下、
  *       但 {@code station_id} 写着 B 站」的枪，而
  *       {@code idx_connector_station_status} 上的「某站所有枪」查询会真的把它查出来。</li>
  *
- *   <li><b>没有 {@code currentOrderId}</b> —— 这一列归 P1c 的订单状态机。
- *       它是唯一索引 {@code uk_connector_current_order} 的落点，
- *       也就是「一把枪同时只能有一个订单」这条铁律的实现。
- *       管理端能写它，就能凭空制造一个「已占用但没有订单」的枪口，
- *       而那把枪从此再也无法被任何订单使用（唯一键冲突），
- *       而且没有任何报错 —— 用户只会发现「这把枪点不动」。</li>
+ *   <li><b>没有 {@code currentOrderId}</b> —— 这一列归订单状态机，它是唯一索引
+ *       {@code uk_connector_current_order} 的落点，也就是「一把枪同时只能有一个订单」
+ *       这条铁律的实现。管理端能写它，就能凭空制造一个「已占用但没有订单」的枪口，
+ *       而那把枪从此再也无法被任何订单使用（唯一键冲突），而且没有任何报错 ——
+ *       用户只会发现「这把枪点不动」。</li>
  *
- *   <li><b>没有 {@code totalChargeCount}</b> —— 累计次数由 P1c
- *       在订单结算时自增。<b>它是一条历史事实，不是一个可编辑属性</b>，
- *       允许管理端设置它等于允许篡改统计数据。</li>
+ *   <li><b>没有 {@code totalChargeCount}</b> —— <b>它是一条历史事实，不是一个可编辑属性</b>，
+ *       允许管理端设置它等于允许篡改统计数据。由结算在同一个事务里自增，
+ *       语义见 {@code Connector.totalChargeCount}。</li>
  *
- *   <li><b>没有 {@code version}</b> —— 新建的枪版本恒为 0，
- *       由 Service 显式写入。让它由客户端指定，乐观锁第一次更新就失去意义
+ *   <li><b>没有 {@code version}</b> —— 新建的枪版本恒为 0，由 Service 显式写入。
+ *       让它由客户端指定，乐观锁第一次更新就失去意义
  *       （客户端可以传一个比库里大的值，从此永远不冲突）。</li>
  * </ol>
  *
  * <h2>★ 二、{@code chargerId} 用普通字段而不是嵌套路径</h2>
  *
- * <p>接口是扁平的 {@code POST /api/admin/connector}，
- * 而不是 {@code POST /api/admin/charger/{chargerId}/connector}。
+ * <p>接口是扁平的 {@code POST /api/admin/connector}，而不是
+ * {@code POST /api/admin/charger/{chargerId}/connector}。
  *
- * <p>嵌套形状的问题不是审美，是<b>事实来源变成了两个</b>：
- * 路径里的 {@code chargerId} 和 body 里的 {@code chargerId} 可以不一致，
- * 于是必须写代码决定听谁的 —— 而无论听谁的，另一半调用方都会觉得自己的写法是对的。
- * 扁平形状里只有一个地方能表达「这把枪属于哪根桩」。
- *
- * <p>更要紧的是嵌套形状<b>表达不了</b>后台真正需要的那个查询：
- * 「这个站点下所有枪」。枪的列表是按 {@code chargerId} <b>或</b>
- * {@code stationId} 过滤的，不是「从某根桩往下走」。
+ * <p>嵌套形状的问题不是审美，是<b>事实来源变成了两个</b>：路径里的
+ * {@code chargerId} 和 body 里的 {@code chargerId} 可以不一致，于是必须写代码
+ * 决定听谁的 —— 而无论听谁的，另一半调用方都会觉得自己的写法是对的。
+ * 更要紧的是它<b>表达不了</b>后台真正需要的那个查询：「这个站点下所有枪」
+ * （枪的列表是按 {@code chargerId} <b>或</b> {@code stationId} 过滤的，
+ * 不是「从某根桩往下走」）。
  *
  * <h2>★ 三、{@code status} 不在创建请求里</h2>
  *
- * <p>枪的状态是<b>设备上报的事实</b>，不是管理员填的字段。
- * 新建的枪固定为 {@code 0 离线}：它还没有和任何硬件建立过连接，
- * 说它「空闲」需要一个从未发生过的握手。
- *
- * <p>管理员仍然可以把坏枪标成 {@code 4故障} / {@code 5维护}，
- * 那条路径在 {@code ConnectorUpdateDTO} 上，并且受白名单约束 ——
- * 那里的注释解释了为什么 {@code 2已占用} / {@code 3充电中} 不能被手工设置。
+ * <p>枪的状态是<b>设备上报的事实</b>，不是管理员填的字段。新建的枪固定为
+ * {@code 0 离线}：它还没有和任何硬件建立过连接，说它「空闲」需要一个
+ * 从未发生过的握手。管理员仍然可以把坏枪标成 {@code 4故障} / {@code 5维护}，
+ * 那条路径在 {@code ConnectorUpdateDTO} 上，并且受白名单约束。
  */
 @Data
 @Schema(description = "新增充电枪")
@@ -70,11 +63,9 @@ public class ConnectorDTO implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * 所属充电桩
-     *
-     * <p>★ Service 先 {@code ChargerMapper.getById} 确认桩存在，
-     * 并从它身上取 {@code stationId} 填冗余列 —— 两个动作是同一次查询，
-     * 所以「校验桩存在」不是额外成本。
+     * ★ Service 先 {@code ChargerMapper.getById} 确认桩存在，并从它身上取
+     * {@code stationId} 填冗余列 —— 两个动作是同一次查询，所以「校验桩存在」
+     * 不是额外成本。
      *
      * <p>★ 创建成功后必须在<b>同一事务</b>里调
      * {@code ConnectorMapper.refreshGunCount(chargerId)}，
@@ -88,13 +79,12 @@ public class ConnectorDTO implements Serializable {
      * 枪口号，如 {@code "A"} / {@code "B"}
      *
      * <p>★ 与 {@code charger_id} 组成唯一键 {@code uk_connector_charger_gun}，
-     * 约束范围是<b>同一根桩之内</b>：1 号桩有 A 枪、2 号桩也可以有 A 枪。
-     * 这是正确的语义 —— 用户面对的是「1 号桩的 A 枪」，
-     * 而不是一个全局唯一的枪口编号。
+     * 约束范围是<b>同一根桩之内</b>：1 号桩有 A 枪、2 号桩也可以有 A 枪 ——
+     * 用户面对的是「1 号桩的 A 枪」，不是一个全局唯一的枪口编号。
      *
-     * <p>不做正则应约束成单个字母：真实设备上有 {@code "A1"}、
-     * {@code "枪1"}、{@code "CCS1"} 各种写法，把这个自由度锁死
-     * 只会让对接现场改不动。真正的约束是「同一根桩内不重复」。
+     * <p>不用正则约束成单个字母：真实设备上有 {@code "A1"}、{@code "枪1"}、
+     * {@code "CCS1"} 各种写法，把这个自由度锁死只会让对接现场改不动。
+     * 真正的约束是「同一根桩内不重复」。
      */
     @Schema(description = "枪口号，同一充电桩内唯一", example = "A")
     @NotBlank(message = "枪口号不能为空")
@@ -102,11 +92,9 @@ public class ConnectorDTO implements Serializable {
     private String gunNo;
 
     /**
-     * 接口类型
+     * 接口类型，自由文本，如 {@code "GB/T 20234.3"}（国标直流）、{@code "CCS2"}
      *
-     * <p>自由文本，如 {@code "GB/T 20234.3"}（国标直流）、
-     * {@code "GB/T 20234.2"}（国标交流）、{@code "CCS2"}。
-     * <b>刻意不做成枚举</b>：标准在演进（ChaoJi、国标 2024 版），
+     * <p>★ <b>刻意不做成枚举</b>：标准在演进（ChaoJi、国标 2024 版），
      * 而一个漏掉新标准的枚举会把「设备已经支持但代码不认识」变成入库失败。
      * 这和 {@code charger.type} 用枚举的判断相反，理由也相反：
      * 桩的「直流/交流」是分类（数量有限、逻辑要分支），
@@ -122,10 +110,9 @@ public class ConnectorDTO implements Serializable {
      * <p>★ {@code NOT NULL} 且库无默认值 —— 和 {@code charger.rated_power_kw}
      * 完全一样，不传就是 500 而不是 400。见 {@code ChargerDTO} 类注释第一节。
      *
-     * <p>★ 枪的额定功率<b>可以小于桩的</b>：一台 120kW 的双枪桩，
-     * 每把枪单独用时拿满 120kW，两把同时用时各 60kW。
-     * 所以这两列不是冗余关系，不能只存一个。
-     * （真正的动态分配要等 P1d 的功率上报，本轮只存铭牌值。）
+     * <p>★ 枪的额定功率<b>可以小于桩的</b>：一台 120kW 的双枪桩，每把枪单独用时
+     * 拿满 120kW，两把同时用时各 60kW，所以这两列不是冗余关系，不能只存一个。
+     * （真正的动态分配要等功率上报，本轮只存铭牌值。）
      */
     @Schema(description = "额定功率，kW", example = "120.00")
     @NotNull(message = "额定功率不能为空")
