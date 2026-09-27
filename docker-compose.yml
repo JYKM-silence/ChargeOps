@@ -78,17 +78,24 @@ services:
       # ★ SQL 脚本**故意不挂到 docker-entrypoint-initdb.d**。
       #
       #   挂上去的话，只有在「数据卷是空的」那一次启动才会执行 ——
-      #   也就是说你改了 sql/chargeops.sql、重启容器，什么都不会发生，
+      #   也就是说你改了脚本、重启容器，什么都不会发生，
       #   而你会以为脚本有问题。
       #
       #   更糟的是加表/改字段时：initdb.d 里的脚本只跑一次，
       #   后续变更根本没有地方落，容易演变成「把数据卷删了重建」——
       #   开发阶段还行，一旦库里有想保留的数据就麻烦了。
       #
-      #   所以改成手工执行（见 README 的一键脚本）：
-      #       docker exec -i chargeops-mysql mysql -uroot -p123456 < sql/chargeops.sql
-      #   每次执行都是幂等的（脚本里每张表都是 CREATE TABLE IF NOT EXISTS），
-      #   想什么时候跑就什么时候跑。
+      #   ★★ 现在表结构由 Flyway 在应用启动时管 ★★
+      #
+      #   initdb.d 这个坑正是当初必须换掉手工脚本的原因之一。迁移文件在
+      #   src/main/resources/db/migration/，跟应用一起走，不跟容器走。
+      #
+      #   这个 compose 只负责让**库存在**（MYSQL_DATABASE: chargeops 建的就是它）。
+      #   建完之后什么都不用做，启动应用时 Flyway 会把表建好。
+      #
+      #   不在这里挂载任何 .sql —— 挂了反而会造出一个「容器建过一次、
+      #   Flyway 又不知道」的分叉状态，而 Flyway 的 baseline 会
+      #   **接受**那个分叉（见 README「baseline 是相信，不是校验」）。
     healthcheck:
       # healthcheck 让 `docker compose up --wait` 能等到数据库真的可用再返回。
       # 没有它的话，容器「启动完成」和「能接受连接」之间还有几秒，

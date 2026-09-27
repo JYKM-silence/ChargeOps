@@ -1,16 +1,28 @@
 -- ============================================================================
--- ChargeOps 新能源充电桩运营平台 —— 建库脚本
+-- ChargeOps 新能源充电桩运营平台 —— V1 初始化建表
 -- ============================================================================
 -- 目标：MySQL 8.4 / utf8mb4_0900_ai_ci / InnoDB / **不使用外键**
 --
--- 执行方式（脚本是幂等的，可以反复执行）：
---   docker exec -i chargeops-mysql mysql -uroot -p123456 < sql/chargeops.sql
+-- ★★ 这是 Flyway 迁移，不是可以随手改的脚本 ★★
 --
--- ★ 为什么这个脚本不挂在 docker-entrypoint-initdb.d 上：
---   挂上去的话只有「数据卷为空」的那一次启动才会执行。改了脚本、重启容器，
---   什么都不会发生，而你会以为脚本有问题。手工执行 + 幂等设计更可控。
+--   已应用过的迁移<b>永远不要修改</b> —— 校验和会不匹配，应用启动直接失败
+--   （spring.flyway.validate-on-migrate 默认开着，这是正确的取舍：
+--   把「有人偷偷改了已应用的迁移」变成一次响亮的失败，而不是让两台机器的
+--   表结构悄悄分叉）。要改表结构就<b>加一个 V3__xxx.sql</b>。
 --
+-- ★ 本文件只包含 DDL。建库（CREATE DATABASE）不在这里，见 sql/00_create_database.sql ——
+--   Flyway 连的是一个已经存在的库，它没有权限也没有语义去创建库。
+--
+-- ★ 种子数据在 V2__seed_data.sql；建库后的自检查询在 sql/verify.sql。
+--   自检是一堆 SELECT，不是迁移，放进来的话每次迁移都会打印一遍结果。
+--
+-- ★ 这里保留 CREATE TABLE IF NOT EXISTS：对全新库没有区别，但它让这个迁移
+--   在「表已经存在」的库上也能跑完 —— 也就是被 baseline 跳过的那些库
+--   万一被手工执行一次也不会炸。真正的漂移保护来自 V3 之后的增量迁移。
+--
+-- ============================================================================
 -- ★★ 全库共 19 张表。开始看之前，先看这五条贯穿全库的约定：★★
+-- ============================================================================
 --
 --  1) 时间一律 datetime(3)（毫秒精度），不用 timestamp。
 --     timestamp 有 2038 上限，且会依赖会话时区做隐式换算 ——
@@ -42,13 +54,6 @@
 --  5) 每个索引都对应一条真实查询，理由写在建表语句下面。
 --     "先建索引，等慢了再说" 在这个项目里是错的 —— 遥测表每秒都在写。
 -- ============================================================================
-
-CREATE DATABASE IF NOT EXISTS `chargeops`
-    DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
-
-USE `chargeops`;
-
-SET NAMES utf8mb4;
 
 -- ============================================================================
 -- 1. member 车主
@@ -409,7 +414,7 @@ CREATE TABLE IF NOT EXISTS `member_package`
     `id`                bigint         NOT NULL AUTO_INCREMENT,
     `member_id`         bigint         NOT NULL COMMENT '持有人',
     `package_id`        bigint         NOT NULL COMMENT 'SKU：charge_package.id',
-    `buy_order_id`      bigint          DEFAULT NULL COMMENT '购买时的支付单；P1c-3 之前为 NULL',
+    `buy_order_id`      bigint          DEFAULT NULL COMMENT '★ 恒为 NULL：直购模型不建购买单，此列是预留（见 MemberPackage.buyOrderId）',
     `package_type`      tinyint        NOT NULL COMMENT '★ 购买时冻结的 SKU 类型：1电量包 2时长包 3服务费折扣包 4次卡',
     `package_name`      varchar(64)    NOT NULL COMMENT '★ 购买时的 SKU 名称快照',
     `total_kwh`         decimal(10, 2)  DEFAULT NULL COMMENT 'type=1 总电量',
@@ -631,13 +636,25 @@ CREATE TABLE IF NOT EXISTS `charging_order`
 --       顺序是 (connector_id, status) 而不是反过来 ——
 --       枪的选择性远高于状态（几千把枪 vs 几个状态值）。
 --
---   idx(status, create_time)
---       定时任务扫超时：where status=1 and create_time < now() - 15min。
---       状态在前：该场景下"待启动"只占极小比例，等值定位后按时间范围取；
---       写成 (create_time, status) 会退化成"扫全表所有时间点再过滤状态"。
+--   idx(status, create_time)   ★ 三个消费者，全都靠"状态在前"
+--       1) 定时任务扫待启动超时：where status=1 and create_time < now() - 15min。
+--       2) 站点删除守卫：where status in (1,2,3,4,6,9) and station_id = ?
+--          —— 见 ChargingOrderMapper.countByStation。
+--       3) 桩删除守卫：同一条件换成 charger_id = ?
+--          —— 见 ChargingOrderMapper.countByCharger。
+--       状态在前：该场景下"在途订单"只占极小比例，等值/IN 定位后残余过滤设备列；
+--       写成 (create_time, status) 或让 (station_id, create_time) 来服务第 2、3 条，
+--       都会退化成"扫完这个站的全部历史订单再逐个过滤状态"。
+--
+--       ★ 第 2、3 条曾经不存在：它们各自有一个"看起来更对口"的候选
+--         （idx_order_station_create、以及 charger_id 单独建的索引），
+--         而那两条路都是错的。把 SQL 的参数顺序改一下就会踩到，
+--         所以这两条守卫的接口注释里都重复了一遍这个约定。
 --
 --   idx(station_id, create_time)
 --       站点维度的日报/对账。
+--       ★ 它服务的是"按站点取订单列表"（给报表用），**不是**上面那两条删除守卫 ——
+--         守卫只要一个 COUNT，走它会把整站历史读一遍。
 --
 -- ★ 不建 member_id 单列索引 —— 被 idx_order_member_create 的最左前缀覆盖，
 --   建了就是一条永远不会被选中、但每次 insert 都要维护的索引。
@@ -820,7 +837,7 @@ CREATE TABLE IF NOT EXISTS `wallet_transaction`
     `id`             bigint         NOT NULL AUTO_INCREMENT,
     `transaction_no` varchar(32)    NOT NULL,
     `member_id`      bigint         NOT NULL,
-    `order_id`       bigint          DEFAULT NULL COMMENT '充值为 NULL',
+    `order_id`       bigint          DEFAULT NULL COMMENT '充值和套餐购买为 NULL（唯一索引不约束 NULL，见 uk_txn_order_type）',
     `type`           tinyint        NOT NULL COMMENT '1充值 2冻结 3解冻 4扣款 5退款 6套餐购买 7管理员调账',
     `amount`         decimal(12, 2) NOT NULL COMMENT '正入账负出账',
     `balance_before` decimal(12, 2) NOT NULL,
@@ -843,8 +860,15 @@ CREATE TABLE IF NOT EXISTS `wallet_transaction`
 --    这条唯一索引让"扣两次钱"在数据库层不可能发生 ——
 --    不管那三条路径的代码写得对不对、有没有并发。
 --
---    order_id 为 NULL 的充值流水不参与约束（唯一索引不约束 NULL），正合需要：
---    充值本来就可以有任意多笔。
+--    order_id 为 NULL 的流水**完全不参与约束**（唯一索引不约束 NULL）。
+--    目前有两种：
+--      · 充值（type=1）—— 正合需要，充值本来就可以有任意多笔；
+--      · 套餐购买（type=6）—— ★ 这不是「正合需要」而是**代价**：
+--        直购模型下没有购买单，所以这条路没有数据库级的幂等保证。
+--        详见 WalletTransactionType.PACKAGE_PURCHASE。
+--    ★ 所以这句话不能说满：「资金流水都有唯一索引兜底」是**错的**。
+--      真正受保护的只有 FREEZE / UNFREEZE / DEDUCT / REFUND 四种，
+--      它们在 WalletService 上的形参是原始类型 long，结构上传不了 null。
 --
 -- ★ 存 before/after 快照（而不是只存变动额）是财务系统的通行做法：
 --   对账时不用重放全部流水就能验证余额正确性。
@@ -889,158 +913,3 @@ CREATE TABLE IF NOT EXISTS `alarm`
 --
 -- ★ 与订单联动：充电中发生故障 → 回填 alarm.order_id
 --   + 强制结束订单（stop_reason=4 设备故障）。
-
--- ============================================================================
--- 种子数据
--- ============================================================================
--- 全部用 INSERT IGNORE，让整个脚本可以反复执行而不会报主键冲突、
--- 也不会产生重复数据。配合 CREATE TABLE IF NOT EXISTS，这个脚本是幂等的。
--- ============================================================================
-
--- 管理员 admin / 123456
--- ★ 这是一段 BCrypt 密文（$2a$10$ 开头，固定 60 字符），不是 MD5。
---   老库用的是 DigestUtils.md5DigestAsHex，那在今天是不可接受的：
---   MD5 无盐、且 GPU 每秒能算几十亿次，一次拖库就等于明文泄露。
---   这段密文已用 BCryptPasswordEncoder.matches("123456", ...) 实测验证过。
-INSERT IGNORE INTO `staff` (`id`, `username`, `password`, `name`, `phone`, `sex`, `id_number`, `role`,
-                            `station_id`, `status`)
-VALUES (1, 'admin', '$2a$10$.yHXk81HCQDHfjXvu6M5U.GhLiBhvefyOblJmfNmRfQjf32A/eCUO',
-        '平台管理员', '13812312312', '1', '110101199001010047', 1, 0, 1);
-
-INSERT IGNORE INTO `category` (`id`, `name`, `type`, `sort`)
-VALUES (1, '直流快充套餐', 1, 1),
-       (2, '交流慢充套餐', 1, 2),
-       (3, '停车服务', 2, 3);
-
-INSERT IGNORE INTO `station` (`id`, `code`, `name`, `operator`, `city`, `address`, `longitude`, `latitude`,
-                              `service_phone`, `status`)
-VALUES (1, 'ST-440300-0001', '科技园充电站', 'ChargeOps', '深圳市', '南山区科技园南路 1 号',
-        113.943000, 22.528000, '0755-88886666', 1);
-
-INSERT IGNORE INTO `charger` (`id`, `station_id`, `device_no`, `name`, `type`, `rated_power_kw`, `gun_count`,
-                              `status`)
-VALUES (1, 1, 'DEV-2026-0001', 'A区-01', 1, 120.00, 2, 1);
-
-INSERT IGNORE INTO `connector` (`id`, `charger_id`, `station_id`, `gun_no`, `connector_type`, `rated_power_kw`,
-                                `status`)
-VALUES (1, 1, 1, 'A', 'GB/T 20234.3', 120.00, 1),
-       (2, 1, 1, 'B', 'GB/T 20234.3', 120.00, 1);
-
--- ----------------------------------------------------------------------------
--- 计费模板：深圳 2026 工商业分时电价（示例值，非真实电价）
--- ----------------------------------------------------------------------------
--- ★★ 这 8 行是理解整个计费模块的入口，值得花几分钟看懂：★★
---
---   时段划分（尖峰 4h / 高峰 7h / 平段 5h / 低谷 8h，合计 24h）：
---     00:00-08:00  低谷  0.3188 + 0.3000    ← 凌晨，电网负荷最低，最便宜
---     08:00-10:00  平段  0.7188 + 0.3000
---     10:00-12:00  尖峰  1.2188 + 0.4000    ← 上午生产高峰，最贵
---     12:00-14:00  平段  0.7188 + 0.3000
---     14:00-19:00  高峰  1.0188 + 0.3500
---     19:00-21:00  尖峰  1.2188 + 0.4000    ← 晚高峰，也是最贵
---     21:00-23:00  高峰  1.0188 + 0.3500
---     23:00-24:00  平段  0.7188 + 0.3000
---
---   三个设计要点：
---   1) 每个时段是**半开区间** [start, end)，最后一段用 24:00:00 收尾。
---      MySQL 的 TIME 类型支持 '24:00:00'（范围到 838:59:59）。
---      如果写成 '00:00:00' 表示结束，23:00-24:00 会变成一个零长度段。
---   2) 电费和服务费**分开存**。这不是冗余：电费是电网收的、服务费是运营商收的，
---      对账时要分别和电网、和财务报表核对。合成一个"单价"就再也拆不开了。
---   3) 一条跨越多个时段的订单（比如 09:30 充到 11:30），会被拆成
---      平段[09:30,10:00) + 尖峰[10:00,11:30) 两段分别计价 ——
---      这正是 P1 的 BillingEngine 要做的事。
---
---   ★ 注意 session 里 22:00-24:00 和 00:00-08:00 是**两行**。
---     不要试图用一行 22:00-08:00 表达跨天：TIME 类型不支持，
---     而且语义混乱（到底是当天 22 点到次日 8 点，还是别的什么？）。
---     按绝对时间切分时，"跨天"天然被处理掉了。
--- ----------------------------------------------------------------------------
-INSERT IGNORE INTO `tariff_template` (`id`, `code`, `name`, `region`, `description`)
-VALUES (1, 'SZ-2026-GYF', '深圳 2026 工商业分时电价', '深圳市',
-        '尖峰 4h / 高峰 7h / 平段 5h / 低谷 8h，合计 24h');
-
-INSERT IGNORE INTO `tariff_rule` (`template_id`, `period_type`, `start_time`, `end_time`, `energy_price`,
-                                  `service_price`, `seq`)
-VALUES (1, 4, '00:00:00', '08:00:00', 0.3188, 0.3000, 1),  -- 低谷
-       (1, 3, '08:00:00', '10:00:00', 0.7188, 0.3000, 2),  -- 平段
-       (1, 1, '10:00:00', '12:00:00', 1.2188, 0.4000, 3),  -- 尖峰
-       (1, 3, '12:00:00', '14:00:00', 0.7188, 0.3000, 4),  -- 平段
-       (1, 2, '14:00:00', '19:00:00', 1.0188, 0.3500, 5),  -- 高峰
-       (1, 1, '19:00:00', '21:00:00', 1.2188, 0.4000, 6),  -- 尖峰
-       (1, 2, '21:00:00', '23:00:00', 1.0188, 0.3500, 7),  -- 高峰
-       (1, 3, '23:00:00', '24:00:00', 0.7188, 0.3000, 8);  -- 平段（★ 24:00:00 的写法）
-
-INSERT IGNORE INTO `station_tariff` (`station_id`, `template_id`, `effective_from`, `status`)
-VALUES (1, 1, '2026-01-01 00:00:00', 1);
-
-INSERT IGNORE INTO `charge_package` (`name`, `category_id`, `package_type`, `station_id`, `price`, `energy_kwh`,
-                                     `valid_days`, `description`)
-VALUES ('150度电包', 1, 1, 0, 100.00, 150.00, 90, '全平台通用，90 天有效'),
-       ('新站首充 50 度', 1, 1, 1, 20.00, 50.00, 30, '仅限科技园充电站');
-
-INSERT IGNORE INTO `member` (`id`, `phone`, `nickname`, `status`)
-VALUES (1, '13800000001', '测试车主', 1);
-
-INSERT IGNORE INTO `wallet` (`member_id`, `balance`, `total_recharge`)
-VALUES (1, 500.00, 500.00);
-
-INSERT IGNORE INTO `vehicle` (`member_id`, `plate_no`, `plate_color`, `brand`, `battery_capacity_kwh`, `is_default`)
-VALUES (1, '粤BD12345', 3, '比亚迪 汉 EV', 85.00, 1);
-
--- ----------------------------------------------------------------------------
--- 给测试车主（member 1）挂一份持有权益，供 P1c-3 的订单链路直接使用
--- ----------------------------------------------------------------------------
--- ★ 三个和别的种子数据不同的写法，每个都有理由：
---
---   1) 用 INSERT ... SELECT 而不是 VALUES —— 因为 package_id 必须是
---      charge_package 里真实存在的那一行，而上面那两条套餐是**自增 id**，
---      写死成 1 只在「全新库」这个前提下成立。
---      用子查询按「名称 + 站作用域」定位，才对得上任何建库顺序。
---
---   2) 固定 id = 1 —— 这是这个脚本幂等的依据（撞主键 → IGNORE）。
---      本表没有别的天然唯一键，不给固定 id 的话重跑一次就多一行。
---
---   3) 有效期用 NOW() 算而不是写死日期 —— 别的种子（计费模板的
---      effective_from='2026-01-01'）写死没问题，因为那是历史事实；
---      而这份权益是**给开发阶段用的**，写死日期的话过几个月再跑建库脚本，
---      拿到的东西一出生就是过期的，表现是「结算说没可用权益」，
---      而你会先去怀疑结算代码。
-INSERT IGNORE INTO `member_package`
-    (`id`, `member_id`, `package_id`, `package_type`, `package_name`,
-     `total_kwh`, `remaining_kwh`, `effective_from`, `expire_time`, `status`)
-SELECT 1, 1, `id`, `package_type`, `name`,
-       150.00, 150.00,
-       DATE_SUB(NOW(3), INTERVAL 1 DAY),
-       DATE_ADD(NOW(3), INTERVAL 89 DAY),
-       1
-FROM `charge_package`
-WHERE `name` = '150度电包'
-  AND `station_id` = 0;
-
--- ============================================================================
--- 建库完成自检
--- ============================================================================
--- 期望：19 张表
-SELECT COUNT(*) AS `表数量（期望 19）`
-FROM information_schema.TABLES
-WHERE TABLE_SCHEMA = 'chargeops';
-
--- 期望：8 行计费规则，时段合计 24 小时
-SELECT COUNT(*)                                                AS `计费规则条数（期望 8）`,
-       SEC_TO_TIME(SUM(TIME_TO_SEC(TIMEDIFF(`end_time`, `start_time`)))) AS `时段合计（期望 24:00:00）`
-FROM `tariff_rule`
-WHERE `template_id` = 1;
-
--- 期望：1 个可用管理员
-SELECT `id`, `username`, `name`, `role` FROM `staff` WHERE `username` = 'admin';
-
--- 期望：1 份可用权益（member_package 是否建对、种子是否挂上）
--- ★ 这里必须打印 expire_time 而不是只 COUNT ——
---   因为种子的有效期是按 NOW() 算的，这一行同时验证了
---   「DATE_ADD/DATE_SUB 算出来的日期格式能被 datetime(3) 接受」这件事。
---   只数行数的话，一个被截断成 0000-00-00 的过期时间是看不出来的。
-SELECT `id`, `member_id`, `package_name`, `total_kwh`, `remaining_kwh`,
-       `effective_from`, `expire_time`, `status`
-FROM `member_package`
-WHERE `member_id` = 1;

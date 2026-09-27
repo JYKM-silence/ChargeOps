@@ -8,7 +8,7 @@ import com.chargeops.exception.ParamErrorException;
  * <p>对应 {@code member_package.status}：
  * {@code 1生效中 2已用尽 3已过期 4已作废}。
  *
- * <h2>★★ 前两个和后两个是**不同性质**的取值 ★★</h2>
+ * <h2>★ 前两个和后两个是<b>不同性质</b>的取值</h2>
  *
  * <pre>
  *   人工写入（状态迁移）      推导出来的（事实的投影）
@@ -17,36 +17,25 @@ import com.chargeops.exception.ParamErrorException;
  *   4 已作废                 3 已过期   ← 过了 expire_time
  * </pre>
  *
- * <p><b>这个区分是有后果的：判断「这份权益现在能不能用」时，只看 status 是错的。</b>
+ * <p><b>所以判断「这份权益现在能不能用」时，只看 status 是错的。</b>
+ * 项目里的做法是两条路径并存：<b>写路径顺手刷新</b>（结算的 UPDATE 里带一个
+ * {@code CASE WHEN remaining <= 0 THEN 2 ELSE status END}，用尽的那一刻就落库）、
+ * <b>读路径兜底</b>（查「可用权益」的 SQL 同时带
+ * {@code status = 1 AND expire_time > NOW()}）—— 这样哪怕定时任务一次都没跑、
+ * 状态列全是陈旧的 1，也不会把一份过期的权益发出去。
  *
- * <p>剩余量归零和过时间点是**事实**，它们不需要任何人去写一个状态列 ——
- * 是「读取时算出来的」。项目里的做法是两条路径并存：
- * <ul>
- *   <li><b>写路径顺手刷新</b>：结算的 UPDATE 里带一个
- *       {@code CASE WHEN remaining <= 0 THEN 2 ELSE status END}，
- *       用尽的那一刻就落库</li>
- *   <li><b>读路径兜底</b>：查「可用权益」的 SQL 里同时带上
- *       {@code status = 1 AND expire_time > NOW()}，
- *       所以哪怕定时任务一次都没跑、状态列全是陈旧的 1，
- *       也不会把一份过期的权益发出去</li>
- * </ul>
- *
- * <p>★ 为什么不做成「只在读的时候算」：那样 status 列就是纯冗余，删掉更好。
- * 但它有价值 —— 车主端的列表要显示「已用尽 / 已过期」的灰态，
- * 每次现算的话每条记录都要比一次时间、判一次余量；
- * 而且运营想看「本月过期了多少份」时，一条 {@code WHERE status = 3} 比
- * 一坨时间函数直观得多。
+ * <p>★ 那为什么不干脆把 status 列删掉、只在读的时候算：车主端的列表要显示
+ * 「已用尽 / 已过期」的灰态，而运营看「本月过期了多少份」时一条
+ * {@code WHERE status = 3} 比一坨时间函数直观得多。
  *
  * <p><b>结论：status 是缓存，{@code expire_time} 和剩余量才是真相。</b>
  * 任何涉及钱的判断都不能只看 status。
  *
  * <h2>★ 为什么 4 是「已作废」而不是「已退款」</h2>
  *
- * <p>退款是资金侧的事实，记录在 {@code wallet_transaction} 里；
- * 权益侧只关心「这份权益还能不能用」。
- * 把退款状态混进来会导致一个问题：一笔部分退款该算什么状态？
- * 所以这里只保留「作废」这一个含义 —— 人为地让它失效，
- * 原因是退款、客服补偿还是数据修复，由 {@code remark} 和资金流水回答。
+ * <p>退款是资金侧的事实，记录在 {@code wallet_transaction} 里；权益侧只关心
+ * 「这份权益还能不能用」。混进退款状态会导致一个问题：一笔部分退款该算什么状态？
+ * 作废的原因（退款、客服补偿、数据修复）由 {@code remark} 和资金流水回答。
  */
 public enum MemberPackageStatus {
 

@@ -168,6 +168,50 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!--
+          数据库迁移。
+
+          ★★ 必须是 spring-boot-starter-flyway，**不是**裸的 flyway-core ★★
+
+          Boot 4 把 Flyway 的自动配置从 spring-boot-autoconfigure 里拆了出去，
+          变成了独立模块。这一点可以自己核实：
+
+              unzip -p spring-boot-autoconfigure-4.1.1.jar \
+                  META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports \
+                  | grep -i flyway
+              → 没有任何匹配
+
+          所以只引 flyway-core 的后果是：**jar 在 classpath 上，但没有任何东西
+          会去读 db/migration**。没有任何报错、没有任何日志，启动一切正常，
+          而迁移一条都没跑 —— 这是最难发现的一种失败，因为「看起来成功了」。
+          它不是「少个功能」，是「你以为有了保护，实际没有」。
+
+          ★ 三个坐标都不写版本号：flyway-core / flyway-mysql 由 Boot 的 BOM
+          钉在 12.4.0（见 spring-boot-dependencies-4.1.1.pom 的 flyway.version），
+          starter 本身也由 BOM 管理。这是本 pom 一贯的做法（见文件头的说明）。
+
+          ★ 为什么要单独引 flyway-mysql：Flyway 9 之后数据库支持被拆成
+          flyway-database-* 系列，MySQL 的方言包不在 flyway-core 里。
+          缺了它的报错是启动时的
+              "Unsupported Database: MySQL 8.4"
+          —— 看起来像「Flyway 不支持这个版本」，实际只是少了一个方言包。
+          （注意 BOM 里的坐标就叫 flyway-mysql，没有 flyway-database-mysql 这一项。）
+
+          验证命令：mvn dependency:tree -Dincludes=org.flywaydb
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-flyway</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
+        </dependency>
+
         <!-- ==================== Redis ==================== -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
