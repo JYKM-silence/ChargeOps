@@ -1,4 +1,4 @@
-# ChargeOps 本地依赖：MySQL + Redis。
+# ChargeOps 本地依赖：MySQL + Redis + pgvector。
 #
 # 只起基础设施，不起应用 —— 应用在 VS Code 里跑（或 mvn spring-boot:run），
 # 改代码不用重建镜像。
@@ -112,8 +112,38 @@ services:
       retries: 20
       start_period: 10s
 
+  pgvector:
+    # 只干一件事：存 AI 助手知识库的向量。业务数据仍然全在 MySQL，这边就一张
+    # vector_store 表，所以它连不上也不影响下单、计费这些主流程。
+    #
+    # 用 pgvector/pgvector 而不是官方的 postgres 镜像：这个镜像已经把 vector 扩展
+    # 编译好了，官方 postgres 镜像里没有，得进容器 apt install 再 CREATE EXTENSION。
+    image: pgvector/pgvector:pg17
+    container_name: chargeops-pgvector
+    restart: unless-stopped
+    ports:
+      # 15432，跟 mysql/redis 一样避开本机可能已有的 5432
+      - "15432:5432"
+    environment:
+      POSTGRES_PASSWORD: "123456"
+      POSTGRES_DB: chargeops_vector
+      TZ: Asia/Shanghai
+    volumes:
+      - chargeops-pgvector-data:/var/lib/postgresql/data
+      # 和 mysql 同理：表不挂进 docker-entrypoint-initdb.d。
+      # vector_store 表由 Spring AI 在 PgVectorStore 初始化时自己建，
+      # 建表 SQL 归它管，Flyway 只盯 MySQL 那边。
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d chargeops_vector"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
 volumes:
   chargeops-mysql-data:
     name: chargeops-mysql-data
   chargeops-redis-data:
     name: chargeops-redis-data
+  chargeops-pgvector-data:
+    name: chargeops-pgvector-data

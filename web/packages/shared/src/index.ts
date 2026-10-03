@@ -188,6 +188,8 @@ export {
   PLATE_COLOR,
   STATION_STATUS,
   STOP_REASON,
+  TICKET_SOURCE,
+  TICKET_STATUS,
   WALLET_TXN_TYPE,
   isBalanceAffecting,
   isConnectorAvailable,

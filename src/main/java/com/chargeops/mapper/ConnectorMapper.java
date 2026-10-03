@@ -69,6 +69,14 @@ public interface ConnectorMapper {
     List<Connector> listByStation(@Param("stationId") Long stationId);
 
     /**
+     * 某台桩下的全部枪。
+     *
+     * <p> 和 {@link #listByStation} 不合并：那个按站点查是从车主端选枪的入口来的，
+     * 一页可能要覆盖多个站点；这个只给 AI 助手查「某号桩现在怎么样」用，参数就是桩 id。
+     */
+    List<Connector> listByChargerId(@Param("chargerId") Long chargerId);
+
+    /**
      * 一批站点的枪数（{@code GROUP BY} 聚合）。{@code SUM(status = 1)} 没有匹配行时是 NULL 不是 0，
      * 所以 {@code COALESCE} 不是装饰；站下没有枪时整行都不出现，调用方不能直接拆箱。{@code ids} 不能是空集合。
      */

@@ -45,6 +45,11 @@ public class BizNoGenerator {
         return next("WT", "chargeops:seq:txn");
     }
 
+    /** 运维工单号。AI 建单和人工建单共用它，source 不同但单号形态一致 */
+    public String ticketNo() {
+        return next("MT", "chargeops:seq:ticket");
+    }
+
     private String next(String prefix, String keyPrefix) {
         String day = LocalDate.now().format(DAY);
         String key = keyPrefix + ":" + day;

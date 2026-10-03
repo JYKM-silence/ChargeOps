@@ -56,6 +56,9 @@
 | springdoc-openapi | 3.1.1 | 替代 knife4j / springfox |
 | jjwt | 0.12.7 | |
 | Jackson | **3**（`tools.jackson.*`） | Boot 4 的默认 JSON 库 |
+| Spring AI | **2.0.1** | 唯一引 BOM 的地方。2.0.x 是唯一支持 Boot 4 的线 |
+| Ollama | 本机 | 对话 `qwen3:8b` + 向量 `bge-m3`，**零 API key** |
+| PostgreSQL + pgvector | 17 / 0.8.7 | 向量库，只服务知识库检索，和业务库（MySQL）分开 |
 
 ---
 
@@ -66,10 +69,25 @@
 - JDK 21、Maven
 - MySQL 8（本机服务或 Docker）
 - Redis
+- PostgreSQL + pgvector（`docker compose up -d pgvector`，见下方第 2 步）
+- Ollama + 两个模型 —— **只有 AI 运维助手需要，不装也不影响其余功能**
 
 **Redis 不是只有跑起来才需要**：`@SpringBootTest` 那几个集成测试类会起完整的
 Spring 上下文，Redis 连不上就整类报错（不是跳过）。只想验算法规避开这一层的话，
 用下面那条「只跑不需要数据库的那部分」的命令（107 条，不碰 MySQL 也不碰 Redis）。
+
+**只有 AI 运维助手需要 PostgreSQL+pgvector 和 Ollama，其余功能一条都不依赖它们。**
+这一点是实测的，两个方向都验过：
+
+- `AiConfiguration` 里那个向量库 bean 标了 `@Lazy`。它的 `initializeSchema(true)` 会在
+  **构造时**连 PG 建表，不加懒加载就是「PG 没起来 → 应用起不来 + 400 条测试一起挂」。
+  实测：停掉 pgvector 容器后，和 AI 毫无关系的 `StationServiceImplTest` 5 条全错在
+  `Error creating bean with name 'vectorStore'` 上；加 `@Lazy` 之后同一个容器停着的状态下
+  该测试类全绿，起回来再跑全量 400 条也全绿。
+- 知识库的启动预热被 `chargeops.ai-ops.reload-on-startup=false` 关掉（在 `src/test/` 里），
+  所以测试期间不会去调向量模型。
+
+换句话说：**没装 Ollama、没起 pgvector，`mvn test` 照样 400 条全绿**，只是 AI 那几个接口用不了。
 
 ### 1. 建库，然后启动应用
 
@@ -87,6 +105,12 @@ mvn spring-boot:run                             # 表结构由 Flyway 在启动�
 | `V1__init_schema.sql` | 19 张表的完整 DDL |
 | `V2__seed_data.sql` | 种子数据（13 条 `INSERT IGNORE`） |
 | `V3__member_package_pay_amount.sql` | `member_package.pay_amount` + `idx_mp_status_expire(status, expire_time)` |
+| `V4__ai_ops_schema.sql` | `charger_alarm` + `maintenance_ticket`（AI 运维助手的两张表） |
+| `V5__ai_ops_seed.sql` | 告警与工单的种子数据 |
+
+**向量库的表不在这里**：它在 PostgreSQL 里，由 Spring AI 自己建（`AiConfiguration` 的
+`initializeSchema(true)`）。Flyway 管的是 MySQL，两个库各管各的 —— 让 MySQL 的迁移去
+建 PG 的表，先不说跨库，光是把两套连接信息塞进一个迁移工具就够乱了。
 
 `sql/00_create_database.sql` 只管 `CREATE DATABASE` —— Flyway 连的是一个**已经存在**的库，
 它没有权限也没有语义去创建库。`sql/verify.sql` 是一段自检查询（每张表的列数），
@@ -108,6 +132,12 @@ mvn spring-boot:run                             # 表结构由 Flyway 在启动�
 于是有一个很贵的坑 —— **写好了 `V4__xxx.sql`、`mvn test` 全绿，但那条迁移一行都没执行过。**
 如果新代码用到了新加的列，全量测试会以 `Unknown column ...` 炸掉一批用例，
 **而报错指向的是 Service，不是迁移**。加完迁移必须手工 `mvn spring-boot:run` 起一次。
+
+**这个坑在 V4/V5 上真的踩到了，一字不差**：两条迁移写完之后 `mvn test` 是 400 条全绿
+（因为当时还没有任何代码碰这两张表），而 `flyway_schema_history` 停在 v3、库里根本没有
+`charger_alarm` / `maintenance_ticket`。等测试真正去写它们时，报的是
+`Table 'chargeops.maintenance_ticket' doesn't exist` —— 11 条用例一起红，
+**而报错指向的是测试夹具，不是「迁移没跑」**。起一次应用之后同一批测试直接全过。
 
 同样，**千万不要用 mysql CLI 手工 `ALTER` 把列加上去**：Flyway 不知道你加过了，
 下一次启动会再执行一遍并死在 `Duplicate column name` 上，一个本来只是「忘了启动一次」
@@ -132,6 +162,70 @@ mvn spring-boot:run                             # 表结构由 Flyway 在启动�
 docker compose up -d
 CHARGE_OPS_DB_PORT=13306 CHARGE_OPS_REDIS_PORT=16379 CHARGE_OPS_REDIS_DB=0 mvn spring-boot:run
 ```
+
+**两条路径都要额外起 pgvector**（AI 知识库用，`docker-compose.yml` 里有）：
+
+```bash
+docker compose up -d pgvector      # 映射到本机 15432
+```
+
+### 2.5 装 Ollama 并拉两个模型（可选，只影响 AI 助手）
+
+```bash
+# 1) 装 Ollama：https://ollama.com/download
+# 2) 拉模型（约 6GB，只拉一次）
+ollama pull qwen3:8b      # 对话 + 工具调用，约 5GB
+ollama pull bge-m3        # 向量化，约 1.2GB
+# 3) 确认它在跑
+curl http://localhost:11434/api/tags
+```
+
+**不装也能跑**：这两个模型只在 AI 运维助手的接口上用得到，`mvn test` 400 条一条都不碰它们。
+首选的对话模型是 `qwen3:8b`（8G 显存够放量化版），显存更大换成 `qwen3:14b` 只需改一个环境变量
+`CHARGE_OPS_OLLAMA_CHAT_MODEL`，代码一行不用动。
+
+**★ 实测：直连 `registry.ollama.ai` 在国内网络上会慢到不可用，配代理能快一个数量级。**
+模型文件最终落在 Cloudflare R2（`*.r2.cloudflarestorage.com`），这一跳被限得很死。
+同一台机器、同一时刻实测：
+
+| 路径 | 速率 | 6GB 要多久 |
+|---|---|---|
+| 直连 | **75 KB/s** | ~22 小时 |
+| 走本地代理 | **1.2 MB/s** | ~1.5 小时 |
+
+Ollama **会读 `HTTPS_PROXY` / `HTTP_PROXY`**，但 Windows 上的托盘程序是登录时自启的，
+**拿不到你在某个 shell 里 export 的变量**。所以要让代理生效，得让服务端进程本身带着这两个变量起来：
+
+```bash
+# 1) 退掉托盘程序（它会自己拉起一个不带代理的服务）
+taskkill //IM "ollama app.exe" //F ; taskkill //IM ollama.exe //F
+
+# 2) 带着代理变量、以后台进程启动服务
+export HTTPS_PROXY="http://127.0.0.1:7897" HTTP_PROXY="http://127.0.0.1:7897"
+export NO_PROXY="localhost,127.0.0.1,::1"      # 别把自己也代理了
+powershell -NoProfile -Command "Start-Process -FilePath \"$LOCALAPPDATA\Programs\Ollama\ollama.exe\" -ArgumentList 'serve' -WindowStyle Hidden"
+
+# 3) 拉模型
+ollama pull qwen3:8b && ollama pull bge-m3
+```
+
+代理端口按自己那套改（Clash Verge 默认 `7897`，Clash for Windows `7890`，v2rayN `10809`）。
+
+两个附带结论：
+- **推理是纯本地的，不需要代理**。模型拉完之后重启机器、让托盘程序照常自启就行，
+  上面这套只是「下载时怎么走快路」。
+- ★ **manifest 那一跳会偶发 `EOF`**（拉取第一步就失败，跟模型大小无关）。
+  实测出现过一次。批量拉模型时**套一层重试循环**，别让一次抖动废掉整轮：
+
+  ```bash
+  for m in qwen3:8b bge-m3; do
+    for i in 1 2 3 4 5; do ollama pull "$m" && break; sleep 15; done
+  done
+  ```
+  blob 是分片的，重试会**接着已下载的部分继续**，不会白下。
+
+装好之后启动应用，知识库会自动灌一次；改完 `src/main/resources/knowledge/` 下的 markdown
+不用重启，调 `POST /api/admin/ai-ops/knowledge/reload` 就行。
 
 ### 3. 启动
 
@@ -321,13 +415,13 @@ Swagger UI：<http://localhost:8081/swagger-ui/index.html>
 mvn test
 ```
 
-当前 **382** 条测试（`mvn -o test` 的汇总行；0 失败 / 0 错误 / 0 跳过），分四类：
+当前 **400** 条测试（`mvn -o test` 的汇总行；0 失败 / 0 错误 / 0 跳过），分四类：
 
 | 类别 | 需要 MySQL/Redis | 条数 | 内容 |
 |---|---|---|---|
 | 纯单测 | ❌ | 100 | `BillingEngineTest` / `TariffValidatorTest`（计费算法）、`ChargePackageServiceImplTest`、`MemberServiceImplTest`（四条登录分支 + token 签发）、`VehicleServiceImplTest`（默认车不变量）。判据是**类上没有 `@SpringBootTest`** —— 不加载容器，所以不碰数据库 |
 | Mapper 集成 | ✅ | 158 | 13 个 `*MapperTest`：审计字段、`24:00:00` 往返、乐观锁、唯一索引的枪口互斥、`refreshGunCount`、排序规则 `ai_ci`/NO PAD 的实测行为、`member_package` 的锁定互斥与结算幂等、 `charging_order` 的六道状态闸门、 `ConnectorMapperTest` 的四条 CAS（占用 / 启动 / 结束 / 释放）与 `incrementChargeCount` |
-| Service / Controller 集成 | ✅ | 109 | `WalletServiceImplTest`（冻结 / 解冻 / 扣款的钱不变量 + `ADMIN_ADJUST` 的**符号**）、`ChargingOrderServiceImplTest`（整条订单链路：建单冻结 → 结算计价 → 支付扣款，含**两条线程的并发建单** + 转挂账时必须**释放权益锁**）、`MemberPackageServiceImplTest`（四种 `PackageType` 的直购 + 作废退款：先 CAS 后打款）、`StationServiceImplTest` / `ChargerServiceImplTest` / `MemberStationServiceImplTest`（删除守卫与站点查询）、`FileUploadControllerTest`（上传的**校验顺序**：先按扩展名拒绝，再读字节） |
+| Service / Controller 集成 | ✅ | 127 | `WalletServiceImplTest`（冻结 / 解冻 / 扣款的钱不变量 + `ADMIN_ADJUST` 的**符号**）、`ChargingOrderServiceImplTest`（整条订单链路：建单冻结 → 结算计价 → 支付扣款，含**两条线程的并发建单** + 转挂账时必须**释放权益锁**）、`MemberPackageServiceImplTest`（四种 `PackageType` 的直购 + 作废退款：先 CAS 后打款）、`StationServiceImplTest` / `ChargerServiceImplTest` / `MemberStationServiceImplTest`（删除守卫与站点查询）、`FileUploadControllerTest`（上传的**校验顺序**：先按扩展名拒绝，再读字节）、**`OpsToolsTest`（11 条：坏输入下不抛异常、召回只取 `status=2` 的工单、`alarm_id` 挂错桩时丢弃关联但仍建单）、`MaintenanceTicketServiceImplTest`（7 条：`updateStatus` 改成同值必须是 no-op）** |
 | 定时任务 | ✅ | 15 | `ChargingOrderSweepJobTest`（支付失败兜底扫描：账龄按 `settle_time`、**绝不自动重试 `pay()`**、单笔失败不带走一轮）、`MemberPackageExpireJobTest`（过期扫描：**被订单锁着的一份都不能动** —— 动了它那份权益就永远退不了款）—— 被测对象都是 `new` 出来的，**不是** `@Autowired`：`chargeops.scheduling.enabled=false` 让那两个 Bean 根本不存在（见下），任务方法直接调一次就等于扫全表，不需要 `@EnableScheduling`。`orderService` 仍来自容器，所以 `markPayFailed` 的独立事务是真的 |
 
 Mapper 与 Service 集成测试都用 `@SpringBootTest`，需要本机 MySQL **和 Redis** 都可用。
@@ -337,7 +431,7 @@ Mapper 与 Service 集成测试都用 `@SpringBootTest`，需要本机 MySQL **�
 **所以：一个时刻只能有一个 `mvn test` 在跑。** 
 
 测试之间靠 `TEST_ID_BASE` 哨兵区间隔离（2e12 钱包 / 3e12 订单 Mapper / 4e12 订单 Service /
-5e12 权益 / 6e12 站点 / 7e12 桩 / 8e12 兜底扫描 / 9e12 权益过期），**但这些区间是一个方向开口的** ——
+5e12 权益 / 6e12 站点 / 7e12 桩 / 8e12 兜底扫描 / 9e12 权益过期 / 11e12 AI 工具 / 12e12 工单），**但这些区间是一个方向开口的** ——
 收尾写的是 `DELETE ... WHERE member_id >= TEST_ID_BASE`，于是一个 3e12 的类
 会连 6e12 的行一起删。串行跑没有任何问题（前一个类的 `@AfterEach` 早就跑完了），
 **但两个 `mvn test` 并行时会互相删数据**，症状是「刚插进去的订单凭空消失」：
@@ -382,6 +476,7 @@ src/main/java/com/chargeops/
 │   └─ P1c-2 起新增：WalletService / ChargingOrderService，
 │      以及 ChargingOrderMapper（全部状态流转都是带 from 的条件更新）、
 │      ChargingSegmentMapper / ChargingOrderEventMapper / WalletMapper / WalletTransactionMapper
+├── ai/               OpsTools —— AI 运维助手的工具集（4 个 @Tool 方法），见下方「AI 运维助手」
 ├── job/              ChargingOrderSweepJob / MemberPackageExpireJob —— 兜底扫描，
 │                    都受 `chargeops.scheduling.enabled` 管着（测试里是 false）
 ├── handler/          GlobalExceptionHandler —— 统一异常翻译
@@ -390,15 +485,22 @@ src/main/java/com/chargeops/
 ├── utils/            JwtUtil / FileStorage + LocalFileStorage / TimeCodec / BizNoGenerator
 └── constant/ exception/ result/ enumeration/    基础件
 
+src/main/resources/knowledge/          知识库语料（3 份 markdown），改动后调 POST /knowledge/reload
+    ├── 故障码说明.md                   按故障码组织，二级标题 = 一个故障码
+    ├── 运维手册.md                     按处理动作组织
+    └── 常见问题.md                     按用户问法组织
+
 src/main/resources/db/migration/
     V1__init_schema.sql                19 张表的完整 DDL（含每条索引的设计理由）
     V2__seed_data.sql                  种子数据（13 条 INSERT IGNORE）
     V3__member_package_pay_amount.sql  退款要用的实付快照 + 过期扫描的索引
-        表结构的唯一真本。要改结构就加 V4，不要改 V1/V2/V3；
+    V4__ai_ops_schema.sql              charger_alarm + maintenance_ticket
+    V5__ai_ops_seed.sql                告警与工单的种子数据
+        表结构的唯一真本。要改结构就加 V6，不要改已应用的任何一条；
         测试不会替你跑迁移，加完必须手工起一次应用（见上）
 sql/00_create_database.sql             建库（Flyway 管不了 CREATE DATABASE）
 sql/verify.sql                         自检查询，给人看的，不是迁移
-docker-compose.yml                     本地依赖（备选路径）
+docker-compose.yml                     本地依赖（pgvector 在必选路径 A 里也要起）
 ```
 
 **P1c-3 新增的 5 张表**（都在 `V1__init_schema.sql` 里）：
@@ -495,9 +597,96 @@ H5 的充电入口原本是断的：建单需要 `stationId` / `chargerId` / `co
 
 ---
 
+## AI 运维助手（P2）
+
+充电桩运维原来靠人翻手册、对故障码，一个「E-021 通信中断」要查三份文档。这一节做的事是
+让运维直接问：「7 号桩通信中断告警怎么处理」，由助手去查实时状态、查历史工单、查手册，
+把结论和处理步骤一次性给出来。
+
+对话模型是本机的 **Ollama + `qwen3:8b`**，向量模型是 `bge-m3`，**零 API key**。
+
+### 三个能力落在哪
+
+| 能力 | 在代码里的位置 | 做了什么 |
+|---|---|---|
+| **RAG 知识库问答** | `KnowledgeBaseServiceImpl` + `AiOpsServiceImpl.systemPrompt` | 三份 markdown 按 `## ` 切片 → `bge-m3` 向量化 → 存 pgvector。提问时先检索 topK 片段，拼进系统提示词再生成 |
+| **Tool Calling** | [`ai/OpsTools.java`](src/main/java/com/chargeops/ai/OpsTools.java) | 4 个 `@Tool` 方法，模型自己决定调哪个、参数填什么 |
+| **Agent 编排** | `AiOpsServiceImpl.chat` | 见下方「Agent 到底在哪里」 |
+
+**4 个工具**：
+
+| 工具 | 回答什么问题 |
+|---|---|
+| `getPileStatus(pileId)` | 这台桩现在什么状态？每把枪呢？最后心跳是什么时候？ |
+| `getRecentAlarms(pileId)` | 最近报过什么警？哪个故障码？恢复了没？ |
+| `findSimilarResolvedTickets(alarmCode)` | 这个故障码以前是怎么修的？（**只取已完成的工单**） |
+| `createMaintenanceTicket(chargerId, title, content, alarmId)` | 派个单给运维 |
+
+### Agent 到底在哪里
+
+**这里没有硬编码的编排代码**，`chat()` 里也不存在「先查状态、再查告警、最后建单」这样的流程。
+`AiOpsServiceImpl.chat` 只做三件事：检索知识库 → 把片段拼进系统提示词 → 发一次
+`chatClient.prompt().tools(opsTools)`。
+
+**多步是模型自己走的**：它看到问题后决定先调 `getRecentAlarms` 拿故障码，拿到之后再调
+`findSimilarResolvedTickets` 查历史，觉得信息够了就组织答案，判断需要派人时才调
+`createMaintenanceTicket`。Spring AI 负责的是工具调用的**协议**（把 `@Tool` 方法的签名
+翻译成模型能懂的 schema、解析它吐回来的调用请求、执行、把结果塞回对话再问一轮）。
+
+所以「Agent 编排」在这个项目里的正确说法是：**编排是模型的行为，不是我们的代码**。
+我们的代码负责的是**把工具设计好** —— 边界清楚、坏输入不抛异常、返回值模型读得懂
+（见决策 24）。这也是为什么 `OpsTools` 里有一半的代码在处理「模型编了个不存在的 id」。
+
+一次**典型**的调用链（问「1 号桩通信中断告警怎么处理」；实际顺序和调不调某个工具由模型决定）：
+
+```
+模型 → getRecentAlarms(1)              → 拿到 E-021，未恢复
+     → findSimilarResolvedTickets("E-021") → 拿到 3 条历史工单的处理结论
+     ← 知识库片段里 E-021 的处理步骤（检索发生在第一轮之前）
+     → 组织答案；如果用户说「派单」 → createMaintenanceTicket(...)
+```
+
+### 5 个接口
+
+```bash
+# 提问（多轮：把上一轮返回的 sessionId 带回来，就记得上下文）
+curl -X POST localhost:8080/api/admin/ai-ops/chat \
+  -H 'token: <管理端 token>' -H 'Content-Type: application/json' \
+  -d '{"question":"1号桩通信中断告警怎么处理"}'
+
+# 只检索、不调模型 —— 排查「知识库没内容」还是「模型没用好内容」
+curl 'localhost:8080/api/admin/ai-ops/knowledge/search?query=E-021' -H 'token: <token>'
+
+# 改完 knowledge/ 下的 markdown 后重建索引，不用重启（幂等）
+curl -X POST localhost:8080/api/admin/ai-ops/knowledge/reload -H 'token: <token>'
+
+# 工单列表 / 改状态
+curl 'localhost:8080/api/admin/maintenance-ticket/page?status=0' -H 'token: <token>'
+curl -X PUT localhost:8080/api/admin/maintenance-ticket/1/status \
+  -H 'token: <token>' -H 'Content-Type: application/json' -d '{"status":2}'
+```
+
+`chat` 是**同步**的，一次请求要等模型多轮往返，耗时按秒计 —— 读超时配在
+`spring.http.clients.read-timeout`，那里给的 60 秒就是上限。流式（SSE）在 P2.5。
+
+### 两条值得知道的实现约束
+
+- **RAG 是手写的，不是 `QuestionAnswerAdvisor`。** 那个类在 Spring AI 2.0 里**不存在**。
+  手写之后反而多了一个排查接口（只检索不生成）。见决策 20。
+- **`OpsTools` 上不能加 `@Transactional` 之类的注解。** `.tools(bean)` 不做 AOP 方法解析，
+  代理之后 `@Tool` 注解读不到，失败方式是**工具一个都不注册、且日志里什么都没有**。见决策 21。
+
+### 已知短板
+
+**追问里的指代检索不到东西**。「那第二点具体怎么做」整句向量化之后召回为空 ——
+这句话里没有任何实词。要修得用上一轮的对话做查询改写（把「第二点」换成实际内容再检索），
+那属于另一件事，本轮不做。工具调用那一侧不受影响，因为模型自己带着上下文。
+
+---
+
 ## 设计决策
 
-这个项目里有一批「看起来可以更简单、但不能更简单」的地方。完整的 18 条论证在
+这个项目里有一批「看起来可以更简单、但不能更简单」的地方。完整的 24 条论证在
 **[docs/设计决策.md](docs/设计决策.md)**，下面只列一句话摘要当索引：
 
 | # | 决策 |
@@ -520,6 +709,12 @@ H5 的充电入口原本是断的：建单需要 `stationId` / `chargerId` / `co
 | 16 | 挂账的来源是「**钱还冻着**」的订单，不是「**枪还占着**」的订单 |
 | 17 | `6 支付失败` 曾经是个死胡同；顺带记两条钱包的顺序后果 |
 | 18 | 套餐作废：**先 CAS，再打款** —— 反过来写就是一台重复退款的机器 |
+| 19 | `spring.ai.model.*` 的默认值是「自动装配」，关掉它必须显式写 `none` |
+| 20 | Spring AI 2.0 里没有 `QuestionAnswerAdvisor`，RAG 是手写的（而这反而是升级） |
+| 21 | `.tools(bean)` 的 bean 一旦被代理，`@Tool` 会**静默地一个都不注册** |
+| 22 | `@ConditionalOnMissingBean` 按**方法返回类型**匹配 —— 一个词的差别 |
+| 23 | 向量库**不能**注册成 `DataSource` bean —— 否则 Druid 退避，业务 SQL 全打到 PG 上 |
+| 24 | 工具方法一律返回 `String`，不返回实体、不抛异常 |
 
 两条贯穿全局的读法：
 
@@ -557,7 +752,8 @@ P0 骨架+DDL ✅ ──┬── P1a 站点/桩/枪/套餐/模板 CRUD ✅ ─�
 | **P1c-3** ✅ | **订单状态机**：9 个状态、六道条件更新闸门。建单冻结模板 + 权益 + 预估金额 → 设备上报启动 / 结束 → 结算跑 `BillingEngine` 写分段 → 支付走钱包扣款 → 退款。`plate_no` 读快照列，**不 JOIN `vehicle`**。**9 个接口**：车主端 5 个（建单 / 列表 / 详情 / 取消 / 支付），管理端 4 个（`start` / `end` / `settle` / `refund`） |
 | **P1c 收尾** ✅ | **两轮补漏**，不新增功能阶段。**第一轮 6 条**：枪口占用 CAS、权益买入路径、删设备查在途订单、`total_charge_count` 自增、支付失败兜底扫描、Flyway 迁移机制。**第二轮 5 条**：套餐退款/作废、`ADMIN_ADJUST` 调账入口、文件上传两端点、权益过期定时任务、转挂账时释放权益锁。**第二轮新增 5 个接口**，测试 284 → **382** |
 | **P1d** | 设备上报（遥测批量入库、结束事件幂等、真实电量曲线） |
-| **P2** | SSE 流式对话、RAG 知识库、MCP Server、工具层 |
+| **P2** ✅ | **AI 运维助手**：RAG 知识库 + Tool Calling + 多轮会话。`charger_alarm` / `maintenance_ticket` 两张表 + 5 个接口（问答 · 检索 · 重建索引 · 工单分页 · 改状态），测试 382 → **400** |
+| **P2.5** | SSE 流式对话、MCP Server、工单流转通知 |
 | **P3** | MQ 解耦、最终一致性对账、可观测性 |
 | **P4** | 遥测分表、缓存一致性深化（**可选**） |
 

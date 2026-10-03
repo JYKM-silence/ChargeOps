@@ -208,4 +208,35 @@ public class MessageConstant {
 
     /** 文件名里没有后缀，无法判断类型。和 {@link #UPLOAD_TYPE_UNSUPPORTED} 分开，因为下一步不同 */
     public static final String UPLOAD_FILE_NAME_INVALID = "文件名不合法，缺少扩展名";
+
+    // ---------- AI 运维助手 ----------
+
+    /**
+     * 模型或向量库的 bean 没注册（{@code spring.ai.model.*} 不是 ollama，见 {@code AiConfiguration}）。
+     *
+     * <p> 措辞指向「谁去开」，不是「哪里错了」：调用方是管理端，能做的动作是找部署的人配模型，
+     * 而不是刷新重试。
+     */
+    public static final String AI_NOT_ENABLED = "AI 助手未启用，请联系部署人员配置模型";
+
+    /**
+     * 模型在但这次调用坏了：Ollama 没起来、超时、返回的内容解析不了。
+     *
+     * <p> 和 {@link #AI_NOT_ENABLED} 分开是因为下一步不同 —— 这一句的落点是「等一会儿重试或者手工处理」。
+     */
+    public static final String AI_UNAVAILABLE = "AI 助手暂时不可用，请稍后重试或手工录入";
+
+    /** {@code %d} 是片段数 */
+    public static final String KNOWLEDGE_RELOAD_EMPTY = "知识库重建后一个片段都没有，请检查 classpath:knowledge/ 下的文档";
+
+    // ---------- 运维工单 ----------
+
+    /** 车主端查别人的订单报「订单不存在」，这里同理：工单不属于调用者可见范围时不透露它存在 */
+    public static final String TICKET_NOT_FOUND = "工单不存在";
+
+    /** {@code ticket_no} 是唯一索引，重复会抛 DuplicateKeyException 而不是这一句 —— 它是给「预检」用的 */
+    public static final String TICKET_NO_DUPLICATE = "工单号已存在，请重试";
+
+    /** 触发条件同 {@link #ORDER_STATUS_CONFLICT}：人工在管理端拖动状态，两个人同时改就会撞上 */
+    public static final String TICKET_STATUS_CONFLICT = "工单当前状态不允许该操作";
 }

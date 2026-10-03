@@ -41,6 +41,7 @@ export type IconName =
   | 'battery'
   | 'clock'
   | 'map'
+  | 'ai'
   | 'logo'
 
 export const ICON_PATHS: Record<IconName, string> = {
@@ -74,6 +75,10 @@ export const ICON_PATHS: Record<IconName, string> = {
   battery: 'M3 8h14v8H3V8Zm17 2h1v4h-1v-4ZM6 11v2m3-2v2m3-2v2',
   clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-13v5l3 2',
   map: 'M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Zm0 0v14m6-12v14',
+  // 一大一小两颗四角星：主星给分量，小的那点在右上角补一点"灵气"。
+  // 不用常见的"机器人头"：它在 16px 下五官会糊成一团黑块，四角星只有 8 个顶点，缩到 14px 仍然清晰
+  ai: 'M11.5 4.5 13.6 10.4 19.5 12.5 13.6 14.6 11.5 20.5 9.4 14.6 3.5 12.5 9.4 10.4 11.5 4.5Z'
+    + 'M19.5 1.9 20.1 3.9 22.1 4.5 20.1 5.1 19.5 7.1 18.9 5.1 16.9 4.5 18.9 3.9 19.5 1.9Z',
   // 品牌标记：一个简化的充电闪电，用于侧边栏顶部与登录页
   logo: 'M13 2 4 14h6l-1 8 9-12h-6l1-8Z',
 }

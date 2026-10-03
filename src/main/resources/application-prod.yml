@@ -81,7 +81,17 @@ spring:
           min-idle: 4
           max-wait: 3000ms
 
+  # 这里没有 ai 块：模型跑在 Ollama 上，没有密钥。生产把 Ollama 部署在别的机器时，
+  # 设 CHARGE_OPS_OLLAMA_URL 指过去即可（见 application.yml）
+
 chargeops:
+  ai-ops:
+    vector-store:
+      # 三项都没有默认值，和上面的数据库、Redis 一样：生产的连接信息必须由部署环境提供
+      url: ${CHARGE_OPS_PG_URL}
+      username: ${CHARGE_OPS_PG_USERNAME}
+      password: ${CHARGE_OPS_PG_PASSWORD}
+
   jwt:
     # 两把密钥都必须由环境变量提供，且长度 UTF-8 编码后 ≥ 32 字节（HS256 的要求，
     # 见 application.yml 里那段说明和 JwtUtil 的显式校验）。生成方式：openssl rand -base64 48。

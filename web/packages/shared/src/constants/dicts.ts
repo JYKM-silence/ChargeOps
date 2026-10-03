@@ -266,3 +266,33 @@ export function isBalanceAffecting(type: number | null | undefined): boolean {
   // 2 冻结、3 解冻 → 只动 frozen_amount
   return type !== 2 && type !== 3
 }
+
+// ── 运维工单 ───────────────────────────────────────────────────────────────
+
+/** 工单状态。`TicketStatus`。 */
+export const TICKET_STATUS = createDict([
+  { code: 0, label: '待处理', tone: 'warning', hint: '刚创建，包括 AI 助手自动建的' },
+  {
+    code: 1,
+    label: '处理中',
+    tone: 'accent',
+    hint: '已经有人在跟。这一档只是"占住"，不代表结论',
+  },
+  {
+    code: 2,
+    label: '已完成',
+    tone: 'success',
+    hint: '只有已完成工单的 content 会被当历史案例召回给 AI',
+  },
+])
+
+/**
+ * 工单来源。
+ *
+ * ★ `sourceLabel` 在 VO 上已经有，**能拿到 VO 的地方优先用它**；
+ *   这里服务的是筛选下拉框（需要全量取值）。
+ */
+export const TICKET_SOURCE = createDict([
+  { code: 1, label: '人工', tone: 'info', hint: '运维手动建的工单' },
+  { code: 2, label: 'AI助手', tone: 'accent', hint: 'AI 助手在对话中建的，正文是它给出的处理建议' },
+])

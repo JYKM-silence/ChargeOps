@@ -765,3 +765,75 @@ export interface OrderEndDTO {
 export interface OrderRefundDTO {
   amount: Decimal
 }
+
+// ── AI 运维助手 ────────────────────────────────────────────────────────────
+
+/**
+ * 向 AI 运维助手提问。
+ *
+ * `sessionId` 为空时后端会新开一个会话，并把生成的 id 回传；**下一轮要把它带回来**，
+ * 否则助手不记得上一句聊了什么。它存在内存里，重启即失效，所以不能当长期标识用。
+ */
+export interface AiChatDTO {
+  /** 后端 `@Size(max = 500)`。 */
+  question: string
+  sessionId?: string | null
+}
+
+/**
+ * 助手的一次回答。
+ *
+ * `references` 是这一轮**实际召回**的知识片段，用来回答「它为什么这么说」。
+ * 它可能为空数组 —— 知识库里没有相关内容时助手应当直说，而不是编一个依据出来。
+ */
+export interface AiChatVO {
+  sessionId: string
+  answer: string
+  references: KnowledgeChunkVO[] | null
+}
+
+/** 一条召回的知识片段。`score` 是余弦相似度，越大越相关。 */
+export interface KnowledgeChunkVO {
+  source: string
+  section: string
+  score: number | null
+  snippet: string
+}
+
+/**
+ * 运维工单。
+ *
+ * `status` 的三档见 `TICKET_STATUS`；`source` 区分人工建单和 AI 建单，
+ * 排查「AI 建的单内容不对」时先看这一列。
+ */
+export interface MaintenanceTicketVO {
+  id: number
+  ticketNo: string
+  chargerId: number | null
+  /** 由后端批量补上；桩已被删除时为 null。 */
+  chargerName: string | null
+  stationId: number | null
+  alarmId: number | null
+  title: string
+  content: string | null
+  source: number | null
+  sourceLabel: string | null
+  status: number | null
+  statusLabel: string | null
+  createTime: ServerTime | null
+  updateTime: ServerTime | null
+}
+
+export interface MaintenanceTicketPageQuery {
+  pageNum?: number
+  pageSize?: number
+  stationId?: number
+  chargerId?: number
+  status?: number
+  source?: number
+}
+
+/** 改工单状态。后端只收 0 / 1 / 2，越界是 400。 */
+export interface MaintenanceTicketStatusDTO {
+  status: number
+}

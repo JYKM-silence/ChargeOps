@@ -119,6 +119,18 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '订单详情', activeMenu: '/order' },
       },
       {
+        path: 'ai-assistant',
+        name: 'ai-assistant',
+        component: () => import('@/views/ai/AiChatView.vue'),
+        meta: { title: 'AI 运维助手' },
+      },
+      {
+        path: 'maintenance-ticket',
+        name: 'maintenance-ticket',
+        component: () => import('@/views/ticket/TicketListView.vue'),
+        meta: { title: '运维工单' },
+      },
+      {
         path: 'profile',
         name: 'profile',
         component: () => import('@/views/ProfileView.vue'),

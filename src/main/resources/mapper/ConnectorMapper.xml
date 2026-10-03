@@ -200,6 +200,14 @@
         ORDER BY id
     </select>
 
+    <select id="listByChargerId" resultType="com.chargeops.entity.Connector">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM connector
+        WHERE charger_id = #{chargerId}
+        ORDER BY id
+    </select>
+
     <!--
        一批站点各自的枪数 —— 一次查询覆盖整页，不是逐个 COUNT。
 

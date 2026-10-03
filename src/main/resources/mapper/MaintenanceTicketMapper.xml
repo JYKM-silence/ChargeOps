@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.chargeops.mapper.MaintenanceTicketMapper">
+
+    <sql id="Base_Column_List">
+        id, ticket_no, charger_id, station_id, alarm_id, title, content,
+        source, status, create_time, update_time, create_user, update_user
+    </sql>
+
+    <!--
+       全列插入，四个审计字段由 @AutoFill 填。凡是 NOT NULL 的列实体里必须有值 ——
+       DDL 的 DEFAULT 在全列插入时不生效，传 null 就是往 NOT NULL 列里显式写 NULL。
+
+       status / source 同理，Service 必须显式给值，不能指望 DDL 的 DEFAULT 0 / 1。
+    -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO maintenance_ticket (ticket_no, charger_id, station_id, alarm_id, title, content,
+                                        source, status,
+                                        create_time, update_time, create_user, update_user)
+        VALUES (#{ticketNo}, #{chargerId}, #{stationId}, #{alarmId}, #{title}, #{content},
+                #{source}, #{status},
+                #{createTime}, #{updateTime}, #{createUser}, #{updateUser})
+    </insert>
+
+    <!--
+       join charger_alarm 而不是在 maintenance_ticket 上冗余一个 alarm_code：
+       冗余列要靠写入方维护，而这个表有两类写入方（人工建单、AI 建单），
+       「两张表迟早不一致」说的就是这种情况。工单量是万级，join 一次不构成瓶颈。
+
+       t.status = 2 的过滤写在 SQL 里而不是让调用方筛：理由见接口注释。
+    -->
+    <select id="listResolvedByAlarmCode" resultType="com.chargeops.entity.MaintenanceTicket">
+        SELECT t.id, t.ticket_no, t.charger_id, t.station_id, t.alarm_id, t.title, t.content,
+               t.source, t.status, t.create_time, t.update_time, t.create_user, t.update_user
+        FROM maintenance_ticket t
+                 JOIN charger_alarm a ON a.id = t.alarm_id
+        WHERE a.alarm_code = #{alarmCode}
+          AND t.status = 2
+        ORDER BY t.update_time DESC, t.id DESC
+        LIMIT #{limit}
+    </select>
+
+    <!--
+       四个条件都是可选的，走 idx_ticket_station_time / idx_ticket_charger_status。
+       都不传时是全表扫 —— 可以接受，后台低 QPS 的管理操作，工单总数是万级。
+    -->
+    <select id="page" resultType="com.chargeops.entity.MaintenanceTicket">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM maintenance_ticket
+        <where>
+            <if test="stationId != null">
+                AND station_id = #{stationId}
+            </if>
+            <if test="chargerId != null">
+                AND charger_id = #{chargerId}
+            </if>
+            <if test="status != null">
+                AND status = #{status}
+            </if>
+            <if test="source != null">
+                AND source = #{source}
+            </if>
+        </where>
+        ORDER BY create_time DESC, id DESC
+    </select>
+
+    <select id="getById" resultType="com.chargeops.entity.MaintenanceTicket">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM maintenance_ticket
+        WHERE id = #{id}
+    </select>
+
+    <!--
+       只改 status。title / content / charger_id 都不在语句里：工单是「已经发生过的事」的
+       记录，改内容等于篡改历史，而 AI 建的那些单还要拿 content 当历史案例召回。
+
+       四个审计列里只推两列，靠 @AutoFill 的 UPDATE 分支填。
+    -->
+    <update id="updateStatus">
+        UPDATE maintenance_ticket
+        SET status      = #{status},
+            update_time = #{updateTime},
+            update_user = #{updateUser}
+        WHERE id = #{id}
+    </update>
+
+</mapper>

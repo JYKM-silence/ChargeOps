@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.chargeops.mapper.ChargerAlarmMapper">
+
+    <!--
+       末尾补 id DESC 是为了全序：同一毫秒上报的两条告警必须有稳定的先后，
+       否则「最近 5 条」在两次查询里可能给出不同的 5 条。
+
+       LIMIT 走 #{limit} 而不是 PageHelper：这里要的是固定条数，不是分页浏览，
+       套分页插件会多一条 count 查询，而 count 的结果没有任何人看。
+    -->
+    <select id="listRecentByChargerId" resultType="com.chargeops.entity.ChargerAlarm">
+        SELECT id, charger_id, connector_id, alarm_code, alarm_level, content,
+               status, alarm_time, recover_time, create_time, update_time
+        FROM charger_alarm
+        WHERE charger_id = #{chargerId}
+        ORDER BY alarm_time DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="getById" resultType="com.chargeops.entity.ChargerAlarm">
+        SELECT id, charger_id, connector_id, alarm_code, alarm_level, content,
+               status, alarm_time, recover_time, create_time, update_time
+        FROM charger_alarm
+        WHERE id = #{id}
+    </select>
+
+</mapper>

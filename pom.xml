@@ -36,7 +36,29 @@
         <springdoc.version>3.1.1</springdoc.version>
         <jjwt.version>0.12.7</jjwt.version>
         <poi.version>5.5.1</poi.version>
+        <spring-ai.version>2.0.1</spring-ai.version>
     </properties>
+
+    <!--
+      Spring AI 是唯一引 BOM 的地方。上面那几个第三方都是一个坐标，钉一个版本就够；
+      它一个 starter 会拉进 spring-ai-model / client-chat / commons / retry 等七八个模块，
+      逐个钉版本的话，漏掉一个就会出现两个模块版本不一致 —— 而那通常表现为
+      NoSuchMethodError，看不出是版本问题。
+
+      2.0.x 是唯一支持 Spring Boot 4 的线（1.1.x 绑的是 Boot 3.5）。反过来 Boot 4
+      也不能用 1.x，装了会在启动时因为找不到 Boot 3 的自动配置类而失败。
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
 
@@ -222,6 +244,40 @@
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
             <version>${poi.version}</version>
+        </dependency>
+
+        <!-- ==================== AI ==================== -->
+        <!--
+          用官方的 DeepSeek starter，不是「OpenAI starter + 改 base-url」：
+          两者都能通，但 OpenAI 那条路会把 DeepSeek 特有的字段（thinking、
+          reasoning-effort、response-format）当成未知属性，走不到它们。
+
+          代价是它带了自动配置，而那个自动配置在没有 api-key 时会 Assert 失败，
+          把整个应用（含 mvn test）带崩。开关见 application.yml 的 spring.ai.model.chat。
+        -->
+        <!--
+          对话和向量化都走本地的 Ollama，一个 starter 顶两个：
+
+            ollama pull qwen3:8b     对话 + 工具调用
+            ollama pull bge-m3       向量化，1024 维
+
+          选它而不是云 API 不是因为省钱（这个用量下云 API 也就几块钱），是因为
+          零密钥 —— 别人 clone 下来不用配任何 key 就能跑起来，演示时也不会因为
+          余额或网络当场翻车。
+
+          代价是模型能力：8B 的多步工具调用不如云上的大模型稳。真不稳时换回云 API
+          只动依赖和配置，业务代码一行不用改 —— 用到的 ChatClient、EmbeddingModel、
+          VectorStore 都是接口，不认供应商。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-ollama</artifactId>
+        </dependency>
+
+        <!-- 向量库：PostgreSQL + pgvector，表由 Spring AI 自己建，不归 Flyway 管 -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-vector-store-pgvector</artifactId>
         </dependency>
 
         <!-- ==================== 可观测性 ==================== -->

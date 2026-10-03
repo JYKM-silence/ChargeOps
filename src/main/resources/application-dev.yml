@@ -69,8 +69,8 @@ spring:
       # 两边都用 `chat:session:` 这个 key 前缀，共用 db 0 会互相覆盖会话数据，
       # 症状是「聊了两句，上下文突然串到另一个人去了」
       database: ${CHARGE_OPS_REDIS_DB:1}
-      # 本机 Redis（E:\redis）设了 requirepass 的话，把下面这行的注释去掉
-      # password: ${CHARGE_OPS_REDIS_PASSWORD:123456}
+      # 本机 Redis（E:\redis）设了 requirepass，不填密码会 NOAUTH。本机没设的话注释掉
+      password: ${CHARGE_OPS_REDIS_PASSWORD:123456}
       # 不设的话默认是无限等待，Redis 挂掉时请求会一直挂着，而不是快速失败
       timeout: 3000ms
 
@@ -82,6 +82,9 @@ spring:
           max-idle: 8
           min-idle: 2
           max-wait: 3000ms
+
+  # 这里没有 ai 块：模型跑在本机 Ollama 上，没有密钥要配。
+  # 端口和模型名在 application.yml，要换机器或换模型设 CHARGE_OPS_OLLAMA_* 环境变量即可。
 
 # dev 专属，所以这里可以出现任何生产不能有的东西（判断标准只有一个：它在生产环境也成立吗）
 management:
@@ -106,3 +109,12 @@ logging:
 chargeops:
   scheduling:
     enabled: true
+
+  ai-ops:
+    vector-store:
+      # 和 MySQL 的端口规则一样：15432 避开本机可能已有的 5432，见 docker-compose.yml
+      url: ${CHARGE_OPS_PG_URL:jdbc:postgresql://localhost:15432/chargeops_vector}
+      username: ${CHARGE_OPS_PG_USERNAME:postgres}
+      # 开发用默认值，和上面 MySQL、Redis 一样：本机容器里的密码就是它。
+      # 生产没有默认值，见 application-prod.yml
+      password: ${CHARGE_OPS_PG_PASSWORD:123456}

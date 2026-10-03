@@ -78,6 +78,15 @@ const MENU: MenuGroup[] = [
     title: '交易',
     items: [{ path: '/order', title: '订单管理', icon: 'order' }],
   },
+  // ★ 运维排在最后，和「交易」平级：AI 助手会建工单、工单会引用桩和告警，
+  //   它跨的是「设备」和「交易」两块，塞进任何一边都会让人找不到。
+  {
+    title: '运维',
+    items: [
+      { path: '/ai-assistant', title: 'AI 运维助手', icon: 'ai' },
+      { path: '/maintenance-ticket', title: '运维工单', icon: 'ticket' },
+    ],
+  },
 ]
 
 /**

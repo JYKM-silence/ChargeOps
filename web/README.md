@@ -526,6 +526,38 @@ getters: { isLoggedIn: (state) => state.token !== null },
 - 后端的 TTL 常量（与前端 `shared/src/http/session.ts` 对齐）：
   管理端 **2 小时**，车主端 **7 天**。
 
+### 9.1 AI 运维助手（`/api/admin/ai-ops/*`）
+
+三个端点：`POST /chat`、`GET /knowledge/search`、`POST /knowledge/reload`。前端三条约束：
+
+- ★★ **`chat` 是慢请求，调用点必须覆盖超时** ★★
+  后端同步等模型多轮往返（有工具调用时至少两轮），读超时配的 60 秒就是上限。
+  而 `createHttp` 的默认超时是 **20 秒**（`shared/src/http/createHttp.ts`）。
+  `api/aiOps.ts` 给它单独开了 **90 秒**。
+
+  不覆盖的后果不是「慢一点」：**超时的那一侧会变成前端** —— 用户看到失败去重试，
+  而服务端第一次调用还在跑。助手是会**建工单**的，重试一次就是两张。
+  同理，`AiChatView.vue` 在等待期间**硬性禁止重发**（不是体验优化）。
+
+- ★ **`sessionId` 由后端生成后回传，下一轮必须带回去**，否则助手不记得上一句。
+  它存在**服务端内存**里，重启即失效 —— 别存 localStorage 当长期标识
+  （刷新页面等于开新会话，这是对的）。
+- ★ **`references` 可能是空数组**，那是「知识库里没有对应文档」，不是接口报错。
+  页面必须把这种情况**显式说出来**，否则用户会把模型按通用知识编的答案
+  当成有据可查的结论。
+- 排查「助手答得不对」的第一步是 **`GET /knowledge/search` 这个只检索不调模型的端点**：
+  召回为空 → 语料问题（重问一百次也没用，要补文档）；召回正常但答得不好 →
+  提示词或模型问题。这条分支判断在 `AiChatView.vue` 的「检索工具」侧栏里。
+- `POST /knowledge/reload` **返回 `0` 不能报成功** —— 那说明一条文档都没读到
+  （目录空 / 打包没带上），报成「重建完成」会让人带着空知识库去提问然后怪模型。
+
+- ⚠ **这三个端点没有 Mock，两条 AI 页面（`/ai-assistant`、`/maintenance-ticket`）
+  在纯 Mock 模式下用不了。** 这是**故意的**：AI 页面的全部价值在于
+  「真的调了模型、真的检索了向量库」，mock 一个固定答案既演示不了工具调用，
+  又会让「Mock 与后端静默发散」这条已知限制多出一个高危面 —— 那恰好是
+  最容易被当成「功能正常」的一种发散。要在离线环境演示 AI，请按
+  `README.md` 装 Ollama + pgvector，走真后端。
+
 ---
 
 ## 10. 目录索引
@@ -553,7 +585,9 @@ web/
     │           ├── admin-*.ts   # auth / station / catalog / tariff / member / order
     │           ├── member-*.ts  # auth / browse / asset / order
     │           └── upload.ts
-    ├── admin/src/            # views / api / router / stores / styles / mocks
+    ├── admin/src/            # views / api / router / stores / utils / styles / mocks
+    │   │                     # views/ai（AI 运维助手 · 对话 + 检索工具）· views/ticket（运维工单）
+    │   │                     # utils/chatText.ts（模型输出的极简排版，**不引 markdown 库、不碰 v-html**）
     └── h5/src/               # views / api / router / stores / composables / components / styles / mocks
 ```
 

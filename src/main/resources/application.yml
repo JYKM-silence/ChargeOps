@@ -40,6 +40,48 @@ spring:
         size: 4
       thread-name-prefix: chargeops-sched-
 
+  # 超时写在配置里而不是 @Bean 里：Spring AI 用的是 Boot 自动配置的那个
+  # RestClient.Builder，容器里这几个键对它同样生效，为此写一个 Java 配置类是多余的。
+  #
+  # read-timeout 默认的 30s 不够：一次带工具调用的问答要等模型多轮往返。
+  # 超时抛的是 ResourceAccessException，前端看到「AI 响应超时」，用户会重试，也就是白等两次。
+  http:
+    clients:
+      connect-timeout: 5s
+      read-timeout: 60s
+
+  ai:
+    # 供应商是 Ollama，装在本机。这里没有「把用不到的自动配置关掉」那一串，
+    # 因为 Ollama 不需要密钥，没有「密钥为空但 bean 照样建」这个问题。
+    #
+    # 换回云 API 时那一串是必须的：那些自动配置类的默认值是「装配」而不是「不装配」
+    # （matchIfMissing = true），密钥为空时它们照样去建 bean，在建的过程中 Assert 失败，
+    # 把应用和 mvn test 一起带崩。实测漏关一个，382 个测试里 282 个报上下文加载失败。
+    model:
+      chat: ollama
+      embedding: ollama
+
+    ollama:
+      base-url: ${CHARGE_OPS_OLLAMA_URL:http://localhost:11434}
+
+      chat:
+        # qwen3 是目前本地模型里工具调用最稳的一档。8G 显存放得下 8b 的量化版，
+        # 显存更大可以换 qwen3:14b，代码一行不用改。
+        model: ${CHARGE_OPS_OLLAMA_CHAT_MODEL:qwen3:8b}
+
+        # 关掉思维链。qwen3 默认先输出一段 reasoning 再给答案，那对调试有用，
+        # 但会把响应时间成倍拉长，而且每一轮工具调用都要重新生成一遍。
+        think: false
+
+        # 低温度：答案要以检索到的文档片段和工具返回的真实数据为准，不需要模型发挥。
+        # 调高会让它在没有依据时也把话说圆。
+        temperature: 0.0
+
+      embedding:
+        # 1024 维，必须和 AiOpsProperties 里的 dimensions 一致。
+        # 换向量模型要重建索引：不同模型的向量空间不可比，混用会检索出完全不相关的东西
+        model: ${CHARGE_OPS_OLLAMA_EMBEDDING_MODEL:bge-m3}
+
 mybatis:
   # XML 在 resources/mapper 下，和 Mapper 接口的包路径不一致，所以必须在这里声明位置
   mapper-locations: classpath:mapper/*.xml
