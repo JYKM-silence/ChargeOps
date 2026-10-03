@@ -1,0 +1,270 @@
+{
+  "version": 1,
+  "description": "RAG 检索质量标注集。每条给一个真实风格的提问，标注它应命中的知识节（source + section，与 markdown 里的 ## 标题逐字一致）。expect 的第一条是主答案，后面的条目是同样可接受、不算失败的回答。negative=true 的条目是知识库里根本没有的问题，用来量「阈值调高之后是否还乱召回」。context 是追问组的前置对话，用来量查询改写的收益：这类问题单独拿去向量化几乎召不回东西。",
+  "cases": [
+    {
+      "id": "code-rule",
+      "question": "故障码 E-0XX 和 E-2XX 分别代表什么",
+      "expect": [{ "source": "故障码说明.md", "section": "编码规则" }]
+    },
+    {
+      "id": "e001",
+      "question": "急停按钮被按下了，怎么恢复",
+      "expect": [{ "source": "故障码说明.md", "section": "E-001 急停按钮触发" }]
+    },
+    {
+      "id": "e002",
+      "question": "漏电保护动作了，能直接复位继续用吗",
+      "expect": [{ "source": "故障码说明.md", "section": "E-002 漏电保护动作" }]
+    },
+    {
+      "id": "e010",
+      "question": "桩上报交流输入过压是什么原因",
+      "expect": [{ "source": "故障码说明.md", "section": "E-010 交流输入过压" }]
+    },
+    {
+      "id": "e011",
+      "question": "傍晚充电高峰老是报欠压",
+      "expect": [{ "source": "故障码说明.md", "section": "E-011 交流输入欠压" }]
+    },
+    {
+      "id": "e015",
+      "question": "三相不平衡怎么排查",
+      "expect": [{ "source": "故障码说明.md", "section": "E-015 三相不平衡" }]
+    },
+    {
+      "id": "e021",
+      "question": "1号桩通信中断告警怎么处理",
+      "expect": [
+        { "source": "故障码说明.md", "section": "E-021 通信中断" },
+        { "source": "运维手册.md", "section": "离线桩的排查顺序" }
+      ]
+    },
+    {
+      "id": "e030",
+      "question": "充电枪没插好会报什么故障码",
+      "expect": [{ "source": "故障码说明.md", "section": "E-030 充电枪未正确连接" }]
+    },
+    {
+      "id": "e041",
+      "question": "绝缘检测失败怎么办",
+      "expect": [{ "source": "故障码说明.md", "section": "E-041 绝缘检测失败" }]
+    },
+    {
+      "id": "e052",
+      "question": "充电中途报 BMS 通信超时",
+      "expect": [{ "source": "故障码说明.md", "section": "E-052 BMS 通信超时" }]
+    },
+    {
+      "id": "e060",
+      "question": "直流输出过流是什么原因",
+      "expect": [{ "source": "故障码说明.md", "section": "E-060 直流输出过流" }]
+    },
+    {
+      "id": "e073",
+      "question": "功率模块温度超过 85 度",
+      "expect": [{ "source": "故障码说明.md", "section": "E-073 功率模块过热" }]
+    },
+    {
+      "id": "e088",
+      "question": "读卡器读不了卡怎么处理",
+      "expect": [{ "source": "故障码说明.md", "section": "E-088 读卡器故障" }]
+    },
+    {
+      "id": "e090",
+      "question": "电表数据跳变，计费单元异常",
+      "expect": [{ "source": "故障码说明.md", "section": "E-090 计费单元异常" }]
+    },
+    {
+      "id": "manual-inspection",
+      "question": "日常巡检的周期和内容是什么，日检周检月检各做什么",
+      "expect": [{ "source": "运维手册.md", "section": "日常巡检周期" }]
+    },
+    {
+      "id": "manual-offline-order",
+      "question": "桩离线了，出车之前按什么顺序排查",
+      "expect": [
+        { "source": "运维手册.md", "section": "离线桩的排查顺序" },
+        { "source": "常见问题.md", "section": "桩显示离线，但现场看设备是通电的" }
+      ]
+    },
+    {
+      "id": "manual-gun-care",
+      "question": "枪头平时怎么保养",
+      "expect": [{ "source": "运维手册.md", "section": "充电枪的日常维护" }]
+    },
+    {
+      "id": "manual-rain",
+      "question": "雨天作业要注意什么",
+      "expect": [{ "source": "运维手册.md", "section": "雨天与汛期运维" }]
+    },
+    {
+      "id": "manual-hot",
+      "question": "高温季节运维重点做哪几件事",
+      "expect": [
+        { "source": "运维手册.md", "section": "高温季节运维" },
+        { "source": "故障码说明.md", "section": "E-073 功率模块过热" }
+      ]
+    },
+    {
+      "id": "manual-safety",
+      "question": "断电作业前要做哪些安全措施",
+      "expect": [{ "source": "运维手册.md", "section": "安全操作规范" }]
+    },
+    {
+      "id": "manual-ticket-flow",
+      "question": "告警之后工单怎么流转和定级",
+      "expect": [{ "source": "运维手册.md", "section": "工单处理流程" }]
+    },
+    {
+      "id": "manual-spares",
+      "question": "常用备件按什么比例备库存",
+      "expect": [
+        { "source": "运维手册.md", "section": "备件管理" },
+        { "source": "常见问题.md", "section": "一个站点要配几把备用枪线" }
+      ]
+    },
+    {
+      "id": "faq-offline",
+      "question": "桩显示离线，但现场看设备是通电的，怎么回事",
+      "expect": [{ "source": "常见问题.md", "section": "桩显示离线，但现场看设备是通电的" }]
+    },
+    {
+      "id": "faq-half-stop",
+      "question": "车主说充了一半就停了",
+      "expect": [{ "source": "常见问题.md", "section": "用户说充了一半就停了" }]
+    },
+    {
+      "id": "faq-multi-offline",
+      "question": "同一个站好几台桩同时离线",
+      "expect": [{ "source": "常见问题.md", "section": "同一站点多台桩同时离线" }]
+    },
+    {
+      "id": "faq-billing",
+      "question": "车主说计费金额和预期不一致",
+      "expect": [
+        { "source": "常见问题.md", "section": "计费金额和用户预期不一致" },
+        { "source": "故障码说明.md", "section": "E-090 计费单元异常" }
+      ]
+    },
+    {
+      "id": "faq-no-response",
+      "question": "充电枪插上去没反应",
+      "expect": [{ "source": "常见问题.md", "section": "充电枪插上后没反应" }]
+    },
+    {
+      "id": "faq-spare-gun",
+      "question": "一个站点要配几把备用枪线",
+      "expect": [
+        { "source": "常见问题.md", "section": "一个站点要配几把备用枪线" },
+        { "source": "运维手册.md", "section": "备件管理" }
+      ]
+    },
+    {
+      "id": "faq-on-site",
+      "question": "巡检发现问题当场处理不了怎么办",
+      "expect": [{ "source": "常见问题.md", "section": "巡检发现的问题当场处理不了怎么办" }]
+    },
+    {
+      "id": "faq-flood-season",
+      "question": "汛期前要做哪些准备",
+      "expect": [{ "source": "常见问题.md", "section": "汛期前要做哪些准备" }]
+    },
+    {
+      "id": "faq-ticket-deadline",
+      "question": "工单多久必须闭环",
+      "expect": [{ "source": "常见问题.md", "section": "工单多久必须闭环" }]
+    },
+    {
+      "id": "para-leak-rain",
+      "question": "下雨天枪口进水跳闸了",
+      "expect": [
+        { "source": "故障码说明.md", "section": "E-002 漏电保护动作" },
+        { "source": "运维手册.md", "section": "雨天与汛期运维" }
+      ]
+    },
+    {
+      "id": "para-billing-expensive",
+      "question": "用户嫌电费贵，说肯定算错了",
+      "expect": [{ "source": "常见问题.md", "section": "计费金额和用户预期不一致" }]
+    },
+    {
+      "id": "para-no-network",
+      "question": "桩连不上网，后台看不到它",
+      "expect": [
+        { "source": "故障码说明.md", "section": "E-021 通信中断" },
+        { "source": "常见问题.md", "section": "桩显示离线，但现场看设备是通电的" }
+      ]
+    },
+    {
+      "id": "para-fan-noise",
+      "question": "桩里风扇响得厉害，夏天老是停机",
+      "expect": [{ "source": "故障码说明.md", "section": "E-073 功率模块过热" }]
+    },
+    {
+      "id": "neg-weather",
+      "question": "今天天气怎么样",
+      "negative": true
+    },
+    {
+      "id": "neg-warranty",
+      "question": "设备的保修期是多久",
+      "negative": true
+    },
+    {
+      "id": "neg-salary",
+      "question": "运维人员的工资怎么算",
+      "negative": true
+    },
+    {
+      "id": "neg-other-brand",
+      "question": "特斯拉超充站的故障码也是这一套吗",
+      "negative": true
+    },
+    {
+      "id": "fu-e021-second-point",
+      "question": "那第二点具体怎么做",
+      "expect": [{ "source": "故障码说明.md", "section": "E-021 通信中断" }],
+      "context": [
+        { "role": "user", "text": "1号桩通信中断告警怎么处理" },
+        { "role": "assistant", "text": "1. 先在平台确认是单桩离线还是整站离线；2. 重启桩内通信模块，断电 30 秒后上电；3. 检查天线接头是否拧紧、有无进水；4. 查询 SIM 卡是否欠费。" }
+      ]
+    },
+    {
+      "id": "fu-hot-first-point",
+      "question": "第一点具体怎么操作",
+      "expect": [{ "source": "运维手册.md", "section": "高温季节运维" }],
+      "context": [
+        { "role": "user", "text": "夏天功率模块老是过热怎么办" },
+        { "role": "assistant", "text": "1. 清理进风口滤网和散热片；2. 检查散热风扇转速，异常立即更换；3. 阳光直射的桩位加装遮阳棚。" }
+      ]
+    },
+    {
+      "id": "fu-e002-after-reset",
+      "question": "复位之后还是跳呢",
+      "expect": [{ "source": "故障码说明.md", "section": "E-002 漏电保护动作" }],
+      "context": [
+        { "role": "user", "text": "E-002 漏电保护动作怎么处理" },
+        { "role": "assistant", "text": "先检查枪头和线缆有无破损和积水，用兆欧表测绝缘电阻，低于 1MΩ 不得投运，确认无异常后再复位。" }
+      ]
+    },
+    {
+      "id": "fu-spare-gun-remote",
+      "question": "那偏远站点呢",
+      "expect": [{ "source": "常见问题.md", "section": "一个站点要配几把备用枪线" }],
+      "context": [
+        { "role": "user", "text": "一个站点要配几把备用枪线" },
+        { "role": "assistant", "text": "按站内枪数的 10% 配置，向上取整，最低 1 套。" }
+      ]
+    },
+    {
+      "id": "fu-ticket-deadline",
+      "question": "这个要多久闭环",
+      "expect": [{ "source": "常见问题.md", "section": "工单多久必须闭环" }],
+      "context": [
+        { "role": "user", "text": "1号桩通信中断告警怎么处理" },
+        { "role": "assistant", "text": "先确认是单桩还是整站离线，重启通信模块，检查天线接头，查询 SIM 卡是否欠费。" }
+      ]
+    }
+  ]
+}
