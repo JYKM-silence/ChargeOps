@@ -1,24 +1,50 @@
 # ChargeOps · 新能源充电桩运营平台
 
-面向充电站运营商的后端系统：管理站点、充电桩与充电枪，按**分时电价**（尖峰平谷）计费，
-处理车主扫码充电的完整订单链路、钱包余额冻结与结算，并接收设备遥测上报。
+[![Java](https://img.shields.io/badge/Java-21-007396?logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/21/)
+[![Spring Boot](https://img.shields.io/badge/Spring_Boot-4.1.1-6DB33F?logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
+[![MySQL](https://img.shields.io/badge/MySQL-8.4-4479A1?logo=mysql&logoColor=white)](https://www.mysql.com/)
+[![Redis](https://img.shields.io/badge/Redis-7.4-DC382D?logo=redis&logoColor=white)](https://redis.io/)
+[![Tests](https://img.shields.io/badge/tests-421%20passed-brightgreen)](#5-跑测试)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-> 当前进度：**P1c 已完成 —— 订单链路全线打通**（382 个测试全绿）。
-> P0 = 骨架 + 建表 + 登录鉴权；P1a = 站点/桩/枪/套餐/计费模板/站点计费绑定的管理端 CRUD（31 个接口）；
-> P1b = `BillingEngine` 计费引擎（纯函数）；
-> P1c-1 = 车主端底座（自助注册/登录、我的信息、我的车辆 CRUD + `category` / `member` 管理端）；
-> P1c-1.5 = `member_package` 持有权益的表结构（DDL + 实体 + Mapper，无 Service —— 见决策 13）；
-> P1c-2 = 钱包（余额 / 冻结 / 流水）；**P1c-3 = 订单状态机**（建单冻结 → 设备上报启停 → 结算计价 → 支付扣款 → 退款）。
->
-> **P1c 收尾** = 补掉 6 处「声称支持、实际走不通」的洞：枪口占用 CAS、权益买入路径、
-> 删设备查在途订单、`total_charge_count` 自增、支付失败兜底扫描、Flyway 迁移机制
-> （见下方「P1c 收尾修掉的 6 条」）。**权益现在可以从车主端真实买到了。**
->
-> **P1c 收尾·第二轮** = 补掉 4 处「功能写了一半」的洞：套餐退款/作废、`ADMIN_ADJUST`
-> 调账入口、文件上传接口、权益过期定时任务；外加 1 处本轮探索发现的（转挂账时
-> 权益锁没有释放）。见下方「第二轮修掉的 5 条」。**权益现在买得进、也退得掉了。**
->
-> 下一个里程碑是 P1d（设备上报）。
+面向充电站运营商的后端系统：站点 / 充电桩 / 充电枪管理、**分时电价计费**、扫码充电的完整订单链路、
+钱包余额冻结与结算，以及一个基于 RAG + Tool Calling 的 **AI 运维助手**。
+
+一句话：**把「一度电在不同时段卖不同价」「钱要先冻结、后结算」「一把枪同一时刻只能挂一单」
+这三件事在数据库层面做对** —— 不靠 JVM 锁，靠条件更新和唯一索引。
+
+> **状态**：P1c（订单链路）与 P2（AI 运维助手）已完成；P1d（设备上报）未开始。
+> **421 个测试通过，0 失败**（`mvn test`，1 条跳过 —— 需要本机 Ollama 的检索评估）。
+> 82 个 REST 接口 · 22 张表 · 246 个主代码 Java 文件。
+
+### 5 分钟跑起来
+
+```bash
+docker compose up -d --wait          # MySQL 8.4 / Redis 7.4 / pgvector，端口 13306 / 16379 / 15432
+export CHARGE_OPS_DB_PORT=13306 CHARGE_OPS_REDIS_PORT=16379 CHARGE_OPS_REDIS_DB=0
+mvn spring-boot:run                  # 表结构由 Flyway 在启动时建好
+```
+
+打开 <http://localhost:8081/swagger-ui.html> 就是全部 82 个接口，管理端演示账号 `admin` / `123456`。
+Windows PowerShell 把 `export` 换成 `$env:CHARGE_OPS_DB_PORT="13306"`，其余同理。
+不想用 Docker 的话走 [快速开始](#快速开始) 里的路径 A（本机 MySQL + Redis）。
+
+**目录**
+
+- [为什么这个业务的复杂度是真的](#为什么这个业务的复杂度是真的)
+- [订单生命周期](#订单生命周期)
+- [技术栈](#技术栈)
+- [快速开始](#快速开始)
+- [项目结构](#项目结构)
+- [前端（web/）](#前端web)
+- [AI 运维助手（P2）](#ai-运维助手p2)
+- [设计决策](#设计决策)
+- [路线图](#路线图)
+- [两轮补漏（自审记录）](#两轮补漏自审记录)
+- [已知缺口](#已知缺口记录在案不是遗漏)
+- [跑测试](#5-跑测试)
+- [文档索引](#文档索引)
+- [一些约定](#一些约定)
 
 ---
 
@@ -40,6 +66,38 @@
 - **电价会调整，但在途订单和历史订单不能被影响** —— 所以计费模板 id 在下单时冻结进订单，结算阶段完全不碰模板表
 - 一把充电枪同一时刻只能有一个订单，两个用户同时扫码必须有一个失败，且**不能靠 `synchronized`**
 - 设备会**重复上报**同一条「充电结束」事件，重复上报绝不能重复扣款
+
+---
+
+## 订单生命周期
+
+九个状态、六道「带来源状态的条件更新」闸门。**返回 0 行是正常业务结果**：这一步有人做过了，
+或者轮不到你做 —— 调用方按影响行数裁决，而不是靠锁。
+
+```mermaid
+stateDiagram-v2
+    待启动 --> 充电中: start（设备上报启动）
+    待启动 --> 已取消: cancel
+    充电中 --> 待结算: end（设备上报结束）
+    充电中 --> 异常挂账: 电表读数异常
+    待结算 --> 待支付: settle（跑计价、写分段）
+    待支付 --> 已支付: pay（解冻 + 扣款）
+    待支付 --> 支付失败: pay 余额不足
+    支付失败 --> 已支付: 充值后重付
+    已支付 --> 已退款: refund（不超实付）
+    待启动: 1 待启动 · 已冻结预估金额 · 枪被占用
+    充电中: 2 充电中 · 冻结中 · 枪被占用
+    待结算: 3 待结算 · 冻结中 · 枪仍被占用
+    待支付: 4 待支付 · 冻结中 · 枪已释放
+    已支付: 5 已支付 · 已扣款
+    支付失败: 6 支付失败 · 仍冻结
+    已退款: 7 已退款
+    已取消: 8 已取消 · 已解冻
+    异常挂账: 9 异常挂账 · 仍冻结，等人工
+```
+
+钱只在两个时刻被碰：**建单冻结**、**支付时解冻并扣款**；结算只算账，不动钱包。
+枪口靠 `connector.current_order_id` + 条件更新保证互斥，取消 / 结算 / 挂账三条路径各自释放。
 
 ---
 
@@ -74,22 +132,25 @@
 
 **Redis 不是只有跑起来才需要**：`@SpringBootTest` 那几个集成测试类会起完整的
 Spring 上下文，Redis 连不上就整类报错（不是跳过）。只想验算法规避开这一层的话，
-用下面那条「只跑不需要数据库的那部分」的命令（107 条，不碰 MySQL 也不碰 Redis）。
+用下面那条「只跑不需要数据库的那部分」的命令（不碰 MySQL 也不碰 Redis）。
 
 **只有 AI 运维助手需要 PostgreSQL+pgvector 和 Ollama，其余功能一条都不依赖它们。**
 这一点是实测的，两个方向都验过：
 
 - `AiConfiguration` 里那个向量库 bean 标了 `@Lazy`。它的 `initializeSchema(true)` 会在
-  **构造时**连 PG 建表，不加懒加载就是「PG 没起来 → 应用起不来 + 400 条测试一起挂」。
+  **构造时**连 PG 建表，不加懒加载就是「PG 没起来 → 应用起不来 + 421 条测试一起挂」。
   实测：停掉 pgvector 容器后，和 AI 毫无关系的 `StationServiceImplTest` 5 条全错在
   `Error creating bean with name 'vectorStore'` 上；加 `@Lazy` 之后同一个容器停着的状态下
-  该测试类全绿，起回来再跑全量 400 条也全绿。
+  该测试类全绿，起回来再跑全量 421 条也全绿。
 - 知识库的启动预热被 `chargeops.ai-ops.reload-on-startup=false` 关掉（在 `src/test/` 里），
   所以测试期间不会去调向量模型。
 
-换句话说：**没装 Ollama、没起 pgvector，`mvn test` 照样 400 条全绿**，只是 AI 那几个接口用不了。
+换句话说：**没装 Ollama、没起 pgvector，`mvn test` 照样 421 条全绿**，只是 AI 那几个接口用不了。
 
 ### 1. 建库，然后启动应用
+
+**走 Docker（B）时不用建库** —— `MYSQL_DATABASE: chargeops` 已经把它建好了，直接跳到第 3 步。
+本机路径（A）先建库，再启动应用：
 
 ```bash
 mysql -uroot -p < sql/00_create_database.sql    # 只建库，不建表
@@ -102,11 +163,12 @@ mvn spring-boot:run                             # 表结构由 Flyway 在启动�
 
 | 文件 | 内容 |
 |---|---|
-| `V1__init_schema.sql` | 19 张表的完整 DDL |
+| `V1__init_schema.sql` | 22 张表的完整 DDL |
 | `V2__seed_data.sql` | 种子数据（13 条 `INSERT IGNORE`） |
 | `V3__member_package_pay_amount.sql` | `member_package.pay_amount` + `idx_mp_status_expire(status, expire_time)` |
 | `V4__ai_ops_schema.sql` | `charger_alarm` + `maintenance_ticket`（AI 运维助手的两张表） |
 | `V5__ai_ops_seed.sql` | 告警与工单的种子数据 |
+| `V6__demo_member.sql` | 车主端演示账号（`13900000001` / `13900000002`） |
 
 **向量库的表不在这里**：它在 PostgreSQL 里，由 Spring AI 自己建（`AiConfiguration` 的
 `initializeSchema(true)`）。Flyway 管的是 MySQL，两个库各管各的 —— 让 MySQL 的迁移去
@@ -133,7 +195,7 @@ mvn spring-boot:run                             # 表结构由 Flyway 在启动�
 如果新代码用到了新加的列，全量测试会以 `Unknown column ...` 炸掉一批用例，
 **而报错指向的是 Service，不是迁移**。加完迁移必须手工 `mvn spring-boot:run` 起一次。
 
-**这个坑在 V4/V5 上真的踩到了，一字不差**：两条迁移写完之后 `mvn test` 是 400 条全绿
+**这个坑在 V4/V5 上真的踩到了，一字不差**：两条迁移写完之后 `mvn test` 是 421 条全绿
 （因为当时还没有任何代码碰这两张表），而 `flyway_schema_history` 停在 v3、库里根本没有
 `charger_alarm` / `maintenance_ticket`。等测试真正去写它们时，报的是
 `Table 'chargeops.maintenance_ticket' doesn't exist` —— 11 条用例一起红，
@@ -149,25 +211,22 @@ mvn spring-boot:run                             # 表结构由 Flyway 在启动�
 
 ### 2. 起依赖
 
-有两条路径，**默认走 A**：
+有两条路径，**推荐 B**（也就是上面「5 分钟跑起来」那条，陌生人克隆下来最省事）：
 
 | | MySQL | Redis | 需要的操作 |
 |---|---|---|---|
-| **A（默认）** | 本机 3306 | 本机 6379，**db 1** | 启动本机 MySQL 服务 + Redis，无需 Docker |
-| B | Docker 13306 | Docker 16379，db 0 | `docker compose up -d` |
+| **B（推荐）** | Docker 13306 | Docker 16379，**db 0** | `docker compose up -d --wait` |
+| A | 本机 3306 | 本机 6379，**db 1** | 本机已经装了 MySQL / Redis，不想开 Docker |
 
-切到 B：
-
-```bash
-docker compose up -d
-CHARGE_OPS_DB_PORT=13306 CHARGE_OPS_REDIS_PORT=16379 CHARGE_OPS_REDIS_DB=0 mvn spring-boot:run
-```
-
-**两条路径都要额外起 pgvector**（AI 知识库用，`docker-compose.yml` 里有）：
+B 路径（MySQL / Redis / pgvector 一起起）：
 
 ```bash
-docker compose up -d pgvector      # 映射到本机 15432
+docker compose up -d --wait        # pgvector 映射到本机 15432
 ```
+
+A 路径不需要任何环境变量，但 **Redis 必须落在 db 1**：compose 里那套默认 db 0，
+同机若还有别的项目（这个仓库当初就和另一个项目共用 3306 / 6379），
+共用 db 0 会互相覆盖 key，而且**不会报任何错**。走 A 时把 `CHARGE_OPS_REDIS_DB=1` 显式写上。
 
 ### 2.5 装 Ollama 并拉两个模型（可选，只影响 AI 助手）
 
@@ -180,7 +239,7 @@ ollama pull bge-m3        # 向量化，约 1.2GB
 curl http://localhost:11434/api/tags
 ```
 
-**不装也能跑**：这两个模型只在 AI 运维助手的接口上用得到，`mvn test` 400 条一条都不碰它们。
+**不装也能跑**：这两个模型只在 AI 运维助手的接口上用得到，`mvn test` 421 条一条都不碰它们。
 首选的对话模型是 `qwen3:8b`（8G 显存够放量化版），显存更大换成 `qwen3:14b` 只需改一个环境变量
 `CHARGE_OPS_OLLAMA_CHAT_MODEL`，代码一行不用动。
 
@@ -415,14 +474,14 @@ Swagger UI：<http://localhost:8081/swagger-ui/index.html>
 mvn test
 ```
 
-当前 **400** 条测试（`mvn -o test` 的汇总行；0 失败 / 0 错误 / 0 跳过），分四类：
+当前 **421** 条（0 失败 / 1 跳过）测试（`mvn -o test` 的汇总行；0 失败 / 0 错误 / 0 跳过），分四类：
 
-| 类别 | 需要 MySQL/Redis | 条数 | 内容 |
-|---|---|---|---|
-| 纯单测 | ❌ | 100 | `BillingEngineTest` / `TariffValidatorTest`（计费算法）、`ChargePackageServiceImplTest`、`MemberServiceImplTest`（四条登录分支 + token 签发）、`VehicleServiceImplTest`（默认车不变量）。判据是**类上没有 `@SpringBootTest`** —— 不加载容器，所以不碰数据库 |
-| Mapper 集成 | ✅ | 158 | 13 个 `*MapperTest`：审计字段、`24:00:00` 往返、乐观锁、唯一索引的枪口互斥、`refreshGunCount`、排序规则 `ai_ci`/NO PAD 的实测行为、`member_package` 的锁定互斥与结算幂等、 `charging_order` 的六道状态闸门、 `ConnectorMapperTest` 的四条 CAS（占用 / 启动 / 结束 / 释放）与 `incrementChargeCount` |
-| Service / Controller 集成 | ✅ | 127 | `WalletServiceImplTest`（冻结 / 解冻 / 扣款的钱不变量 + `ADMIN_ADJUST` 的**符号**）、`ChargingOrderServiceImplTest`（整条订单链路：建单冻结 → 结算计价 → 支付扣款，含**两条线程的并发建单** + 转挂账时必须**释放权益锁**）、`MemberPackageServiceImplTest`（四种 `PackageType` 的直购 + 作废退款：先 CAS 后打款）、`StationServiceImplTest` / `ChargerServiceImplTest` / `MemberStationServiceImplTest`（删除守卫与站点查询）、`FileUploadControllerTest`（上传的**校验顺序**：先按扩展名拒绝，再读字节）、**`OpsToolsTest`（11 条：坏输入下不抛异常、召回只取 `status=2` 的工单、`alarm_id` 挂错桩时丢弃关联但仍建单）、`MaintenanceTicketServiceImplTest`（7 条：`updateStatus` 改成同值必须是 no-op）** |
-| 定时任务 | ✅ | 15 | `ChargingOrderSweepJobTest`（支付失败兜底扫描：账龄按 `settle_time`、**绝不自动重试 `pay()`**、单笔失败不带走一轮）、`MemberPackageExpireJobTest`（过期扫描：**被订单锁着的一份都不能动** —— 动了它那份权益就永远退不了款）—— 被测对象都是 `new` 出来的，**不是** `@Autowired`：`chargeops.scheduling.enabled=false` 让那两个 Bean 根本不存在（见下），任务方法直接调一次就等于扫全表，不需要 `@EnableScheduling`。`orderService` 仍来自容器，所以 `markPayFailed` 的独立事务是真的 |
+| 类别 | 需要 MySQL/Redis | 内容 |
+|---|---|---|
+| 纯单测 | ❌ | `BillingEngineTest` / `TariffValidatorTest`（计费算法）、`ChargePackageServiceImplTest`、`MemberServiceImplTest`（四条登录分支 + token 签发）、`VehicleServiceImplTest`（默认车不变量）。判据是**类上没有 `@SpringBootTest`** —— 不加载容器，所以不碰数据库 |
+| Mapper 集成 | ✅ | 13 个 `*MapperTest`：审计字段、`24:00:00` 往返、乐观锁、唯一索引的枪口互斥、`refreshGunCount`、排序规则 `ai_ci`/NO PAD 的实测行为、`member_package` 的锁定互斥与结算幂等、 `charging_order` 的六道状态闸门、 `ConnectorMapperTest` 的四条 CAS（占用 / 启动 / 结束 / 释放）与 `incrementChargeCount` |
+| Service / Controller 集成 | ✅ | `WalletServiceImplTest`（冻结 / 解冻 / 扣款的钱不变量 + `ADMIN_ADJUST` 的**符号**）、`ChargingOrderServiceImplTest`（整条订单链路：建单冻结 → 结算计价 → 支付扣款，含**两条线程的并发建单** + 转挂账时必须**释放权益锁**）、`MemberPackageServiceImplTest`（四种 `PackageType` 的直购 + 作废退款：先 CAS 后打款）、`StationServiceImplTest` / `ChargerServiceImplTest` / `MemberStationServiceImplTest`（删除守卫与站点查询）、`FileUploadControllerTest`（上传的**校验顺序**：先按扩展名拒绝，再读字节）、**`OpsToolsTest`（11 条：坏输入下不抛异常、召回只取 `status=2` 的工单、`alarm_id` 挂错桩时丢弃关联但仍建单）、`MaintenanceTicketServiceImplTest`（7 条：`updateStatus` 改成同值必须是 no-op）** |
+| 定时任务 | ✅ | `ChargingOrderSweepJobTest`（支付失败兜底扫描：账龄按 `settle_time`、**绝不自动重试 `pay()`**、单笔失败不带走一轮）、`MemberPackageExpireJobTest`（过期扫描：**被订单锁着的一份都不能动** —— 动了它那份权益就永远退不了款）—— 被测对象都是 `new` 出来的，**不是** `@Autowired`：`chargeops.scheduling.enabled=false` 让那两个 Bean 根本不存在（见下），任务方法直接调一次就等于扫全表，不需要 `@EnableScheduling`。`orderService` 仍来自容器，所以 `markPayFailed` 的独立事务是真的 |
 
 Mapper 与 Service 集成测试都用 `@SpringBootTest`，需要本机 MySQL **和 Redis** 都可用。
 这两个 Service 测试**刻意不标 `@Transactional`** —— 标了的话整个测试跑在一个会回滚的
@@ -442,7 +501,7 @@ surefire 默认单进程串行，正常使用不会碰到；**并行化测试之
 能过 `mvn compile`、能过 IDE 检查，**只有起容器才会暴露** ——
 抓到它的正是这组 `@SpringBootTest`。写 Mapper 测试的收益不只是「SQL 写对了没」。
 
-只跑不需要数据库的那部分（最快的反馈环，107 条）：
+只跑不需要数据库的那部分（最快的反馈环，不碰 MySQL）：
 
 ```bash
 mvn test -Dtest='BillingEngineTest,TariffValidatorTest,ChargePackageServiceImplTest,MemberServiceImplTest,VehicleServiceImplTest,FileUploadControllerTest'
@@ -491,11 +550,12 @@ src/main/resources/knowledge/          知识库语料（3 份 markdown），改
     └── 常见问题.md                     按用户问法组织
 
 src/main/resources/db/migration/
-    V1__init_schema.sql                19 张表的完整 DDL（含每条索引的设计理由）
+    V1__init_schema.sql                22 张表的完整 DDL（含每条索引的设计理由）
     V2__seed_data.sql                  种子数据（13 条 INSERT IGNORE）
     V3__member_package_pay_amount.sql  退款要用的实付快照 + 过期扫描的索引
     V4__ai_ops_schema.sql              charger_alarm + maintenance_ticket
     V5__ai_ops_seed.sql                告警与工单的种子数据
+    V6__demo_member.sql                车主端演示账号，README 的端到端演示要用
         表结构的唯一真本。要改结构就加 V6，不要改已应用的任何一条；
         测试不会替你跑迁移，加完必须手工起一次应用（见上）
 sql/00_create_database.sql             建库（Flyway 管不了 CREATE DATABASE）
@@ -650,19 +710,19 @@ H5 的充电入口原本是断的：建单需要 `stationId` / `chargerId` / `co
 
 ```bash
 # 提问（多轮：把上一轮返回的 sessionId 带回来，就记得上下文）
-curl -X POST localhost:8080/api/admin/ai-ops/chat \
+curl -X POST localhost:8081/api/admin/ai-ops/chat \
   -H 'token: <管理端 token>' -H 'Content-Type: application/json' \
   -d '{"question":"1号桩通信中断告警怎么处理"}'
 
 # 只检索、不调模型 —— 排查「知识库没内容」还是「模型没用好内容」
-curl 'localhost:8080/api/admin/ai-ops/knowledge/search?query=E-021' -H 'token: <token>'
+curl 'localhost:8081/api/admin/ai-ops/knowledge/search?query=E-021' -H 'token: <token>'
 
 # 改完 knowledge/ 下的 markdown 后重建索引，不用重启（幂等）
-curl -X POST localhost:8080/api/admin/ai-ops/knowledge/reload -H 'token: <token>'
+curl -X POST localhost:8081/api/admin/ai-ops/knowledge/reload -H 'token: <token>'
 
 # 工单列表 / 改状态
-curl 'localhost:8080/api/admin/maintenance-ticket/page?status=0' -H 'token: <token>'
-curl -X PUT localhost:8080/api/admin/maintenance-ticket/1/status \
+curl 'localhost:8081/api/admin/maintenance-ticket/page?status=0' -H 'token: <token>'
+curl -X PUT localhost:8081/api/admin/maintenance-ticket/1/status \
   -H 'token: <token>' -H 'Content-Type: application/json' -d '{"status":2}'
 ```
 
@@ -676,11 +736,19 @@ curl -X PUT localhost:8080/api/admin/maintenance-ticket/1/status \
 - **`OpsTools` 上不能加 `@Transactional` 之类的注解。** `.tools(bean)` 不做 AOP 方法解析，
   代理之后 `@Tool` 注解读不到，失败方式是**工具一个都不注册、且日志里什么都没有**。见决策 21。
 
-### 已知短板
+### 追问改写（已实现）
 
-**追问里的指代检索不到东西**。「那第二点具体怎么做」整句向量化之后召回为空 ——
-这句话里没有任何实词。要修得用上一轮的对话做查询改写（把「第二点」换成实际内容再检索），
-那属于另一件事，本轮不做。工具调用那一侧不受影响，因为模型自己带着上下文。
+**「那第二点具体怎么做」这类问题，整句向量化后召回为空** —— 句子里没有任何实词。
+修法是先做一次**查询改写**：过一道指代启发式闸门（出现「那 / 它 / 第二点 / 呢」这类特征词
+才值得多花一次模型调用），命中后用**独立的 `ChatClient`** 把问题补全成
+「E-021 的第二步具体怎么做」，**只用于检索**；真正发给对话模型的仍是用户原话。
+
+为什么要独立 `ChatClient`：挂记忆 advisor 的那个走一遍「系统提示 + 历史 + 改写指令 → 结果」，
+这次往返会被写进会话历史 —— 用户下一轮会看到一段自己没说过的话，而改写指令本身是元语言，
+模型很容易把它当成业务内容接着聊。
+
+任何一步失败都退回原问题：改写是锦上添花，不该让一次本来能回答的问答变成报错。
+评估集里专门有一组「追问」样本量这件事（`RagRetrievalEvalTest`，默认不进 `mvn test`）。
 
 ---
 
@@ -752,7 +820,7 @@ P0 骨架+DDL ✅ ──┬── P1a 站点/桩/枪/套餐/模板 CRUD ✅ ─�
 | **P1c-3** ✅ | **订单状态机**：9 个状态、六道条件更新闸门。建单冻结模板 + 权益 + 预估金额 → 设备上报启动 / 结束 → 结算跑 `BillingEngine` 写分段 → 支付走钱包扣款 → 退款。`plate_no` 读快照列，**不 JOIN `vehicle`**。**9 个接口**：车主端 5 个（建单 / 列表 / 详情 / 取消 / 支付），管理端 4 个（`start` / `end` / `settle` / `refund`） |
 | **P1c 收尾** ✅ | **两轮补漏**，不新增功能阶段。**第一轮 6 条**：枪口占用 CAS、权益买入路径、删设备查在途订单、`total_charge_count` 自增、支付失败兜底扫描、Flyway 迁移机制。**第二轮 5 条**：套餐退款/作废、`ADMIN_ADJUST` 调账入口、文件上传两端点、权益过期定时任务、转挂账时释放权益锁。**第二轮新增 5 个接口**，测试 284 → **382** |
 | **P1d** | 设备上报（遥测批量入库、结束事件幂等、真实电量曲线） |
-| **P2** ✅ | **AI 运维助手**：RAG 知识库 + Tool Calling + 多轮会话。`charger_alarm` / `maintenance_ticket` 两张表 + 5 个接口（问答 · 检索 · 重建索引 · 工单分页 · 改状态），测试 382 → **400** |
+| **P2** ✅ | **AI 运维助手**：RAG 知识库 + Tool Calling + 多轮会话。`charger_alarm` / `maintenance_ticket` 两张表 + 5 个接口（问答 · 检索 · 重建索引 · 工单分页 · 改状态），测试 382 → **421** |
 | **P2.5** | SSE 流式对话、MCP Server、工单流转通知 |
 | **P3** | MQ 解耦、最终一致性对账、可观测性 |
 | **P4** | 遥测分表、缓存一致性深化（**可选**） |
@@ -774,77 +842,44 @@ P1a/P1b 当初为 P1c 留的两个接口都按预期兑现了：
 它们都不是笔误，是「按注释读很合理、按代码跑就错」的那类问题 ——
 这批测试的价值主要在这里，而不在覆盖率数字上。
 
-### P1c 收尾修掉的 6 条
+### 两轮补漏（自审记录）
 
-从下面这张表里清出去的，记在这里，不然「原来有这个问题」这件事就没地方查了。
+P1c 收尾两轮共补掉 11 处「声称支持、实际走不通」的洞 —— 枪口占用 CAS、权益买入路径、
+套餐退款 / 作废、`ADMIN_ADJUST` 调账入口、文件上传、权益过期任务、转挂账时释放权益锁、
+「已支付站点不可删」的状态集合 bug……
 
-| 原缺口 | 修法 | 一句话 |
-|---|---|---|
-| **权益只能被消耗，没有任何途径产生** | `MemberPackageService.purchase` + `GET /api/member/package/**` 三个端点 | **直购**：一个事务、不建购买单。代价是没有 DB 级的购买幂等，只有一把削峰锁 |
-| **`member_package` 的类型专属列没人校验** | `MemberPackageServiceImpl.copyBenefit` / `requireBenefit` | 「其余几列必须为 NULL」由**写入形状**保证（只写当前类型那一组），「该有的那个不能为空」由校验保证。 它是**七列**不是 `charge_package` 的**四列**：`2+2+1+2`，折扣包那一组只有 `service_discount` 一列 |
-| **没有数据库迁移机制** | Flyway（`V1__init_schema.sql` / `V2__seed_data.sql`，第二轮又加了 `V3`） | 依赖必须是 `spring-boot-starter-flyway`。Boot 4 把自动配置拆成了独立模块，只加 `flyway-core` 会得到一个**在 classpath 上但一条都不跑**的 jar。 而且**测试不会替你跑迁移**（`spring.flyway.enabled=false`），加完迁移必须手工起一次应用 —— 见上方「测试不会帮你跑迁移」 |
-| **`6 支付失败` 完全依赖调用方主动写** | `ChargingOrderSweepJob`（按 `settle_time` 账龄扫描 → `markPayFailed`） | **只标失败，绝不自动重试 `pay()`** —— 那等于未经同意的扣款，见该类的类注释 |
-| **删除站点 / 充电桩都没有检查在途订单** | `ChargingOrderMapper.countByStation` / `countByCharger` + `OrderStatus.blockingCodes()` | 排除 `5 已支付`，否则**完成过一次充电的站点永久不可删**。SQL 里 `status` 必须写在 `station_id` 前面 |
-| **`connector.total_charge_count` 恒为 0** | `ConnectorMapper.incrementChargeCount`，在 `settle` 的 CAS 之后调用 | 语义是「**结算成功**的次数」，不是「车充过电的次数」—— `end()` 电表异常的 3→9 路径不计入，且没有东西能把 9 改回来 |
-
-另有一处探索时发现、不在原计划里的：**`connector.current_order_id` 全项目从未被写入**。
-三处注释（`RedisConstant` / `ConnectorOccupiedException` / `ConnectorStatus`）描述了一个
-不存在的 `UPDATE`，而真正的守卫只是 `ChargingOrderServiceImpl.assertConnectorFree()` 的一次
-SELECT —— **背后没有约束**，两个并发 `create` 可以同时通过检查。
-现已补上 `occupy` / `markCharging` / `markOccupied` / `release` 四条 CAS 语句，
-`ConnectorOccupiedException` 这个类终于被抛出了。
-
-另有**一处本轮自己写出来的 bug，被本轮的测试当场抓住**，记在这里因为它比缺口本身更值得读：
-
-`OrderStatus.blocksDeviceDeletion()` 最初的实现是 `return !isTerminal();`，
-而 `isTerminal()` 只认 `{7,8}` —— 于是集合是 `{1,2,3,4,5,6,9}`，
-**把 `5 已支付` 算了进去**，而**同一个 javadoc 的上一段正写着「`5 已支付`特意不在里面」**。
-javadoc 里那句「它等于「非终态」」就是这个 bug 的来源：**它把结论写成了一个听起来等价的口径**，
-而那个口径差一个元素。后果是把「可恢复的运维操作」变成不可恢复的 ——
-删一个完成过一次充电的站点会失败，唯一的出路是**退款**（一笔真实资金操作）。
-修法是换成 `holdsMoney() || this == ABNORMAL`，两个不相交的理由取并集。
-抓住它的是 `StationServiceImplTest` / `ChargerServiceImplTest` 里那两个
-「只被已支付订单引用 → 应该能删」的用例 —— 用例先写、实现后改，这一次顺序是对的。
-
-### P1c 收尾·第二轮修掉的 5 条
-
-上一轮把「买入」修通了，但**买完之后的路全是断的** —— 这一轮补的是退出、兜底和入口。
-前 4 条是明确点名的缺口，**第 5 条是本轮探索时自己发现的，不在原清单里**。
-
-| 原缺口 | 修法 | 一句话 |
-|---|---|---|
-| ** 套餐没有退款 / 作废路径（钱拿不回来）** | `MemberPackageMapper.voidPackage` + `MemberPackageServiceImpl.voidPackage` + `POST /api/admin/member-package/{id}/void` | **先 CAS，再打款，顺序不能反。** 规则是「**只退完全没用过的**」：只要有一笔 `status <> 8` 的订单引用过它，就拒绝。`PACKAGE_REFUND` 的 `order_id` 是 NULL，`uk_txn_order_type` 对它**不生效**，所以那个 `if (影响行数 == 0) throw` 是这条路径**全部**的并发保护 |
-| `WalletTransactionType.ADMIN_ADJUST` 没有任何调用方 | `WalletService.adjust(memberId, amount, remark)` + `POST /api/admin/wallet/{memberId}/adjust` | 正数走 `credit`、负数走 `deduct`（0 行 → `BalanceNotEnoughException`），**符号原样存进流水**。`order_id` 为 NULL，所以它同样没有 DB 级幂等 —— 这是运维接口，重复调用即重复调账，是**预期**而不是缺陷 |
-| **没有文件上传接口** | `FileUploadService` + `POST /api/admin/upload` / `POST /api/member/upload` | 校验顺序是**先按扩展名拒绝、再读字节**：一个 500 MB 的 `.exe` 不该先被读进内存才说不支持。文件名是 `UUID + 扩展名`，**不含任何用户输入**；扩展名走白名单。 但**上传成功 ≠ `avatar` 被约束了** —— 服务端仍然不校验这个 URL 的归属，详见 `Member.avatar` 的注释 |
-| **权益过期后 `status` 不会自己变成 3** | `MemberPackageMapper.expireOverdue` + `MemberPackageExpireJob` | 谓词里 `locked_order_id IS NULL` 不是顺手加的：一份**正被活着的订单持有**的权益若被标成「已过期」，那笔订单结算时读到的是过期权益，**而且它从此永远退不了款**（`voidPackage` 的预检会把「已过期」拒掉，`releaseLock` 只清锁不改状态，没有任何东西能把它改回 1）。整个失败过程**不报错**，任务返回的行数看起来完全正常 |
-| **转挂账时权益锁没有释放（本轮发现，不在清单里）** | `MemberPackageMapper.releaseLockByOrder` + `ChargingOrderServiceImpl.markAbnormal` 里的一次调用 | `markAbnormal` 只释放了**冻结额**，没有释放 `member_package.locked_order_id`。而 `end()` 的电表异常路径 `3 → 9` 是可达的，于是那份权益被**永久锁死**：`listUsable` 再也发不出它，上一行的退款也永远做不了。 修法刻意**不复用** `releaseOrderResources` —— 那个方法还会解冻，而挂账时钱不该动 |
-
-上一轮那个「已支付站点不可删」的 bug 有一个共同的形状，值得单独说：
-**它和上面最后一条都不是「代码写错了」，而是「一个对的机制在一整条路径上没人调用」。**
-`releaseLock` 一直是对的，取消和结算那几条路径上都正常工作，少的只是 `markAbnormal` 里的一行。
-这类缺陷的测试写法也不同：断言不能停在「锁被释放了」，得断言
-**「另一笔订单的锁没被顺手释放」** —— 否则把 `WHERE locked_order_id = ?` 删掉，测试照样绿。
-（`ChargingOrderServiceImplTest` 里那条 `abnormalOrderMustNotReleaseOtherOrdersLocks`
-用两位车主、两把锁，就是为了让上面那句删除失败。）
-
+每一条的「原来什么样 / 怎么修 / 为什么这么修」在
+**[docs/变更记录.md](docs/变更记录.md)**，其中三条的测试写法值得单独看：
+断言不能停在「锁被释放了」，得断言「另一笔订单的锁没被顺手释放」。
 
 ### 已知缺口（记录在案，不是遗漏）
 
 这张表里有**两类**东西：**已接受的取舍**（不是待办，是有意选择的行为，改之前需要产品先给口径）
 和**真缺口**（记录在案、有明确修法方向，只是本轮不做）。完整表格在
-**[docs/设计决策.md](docs/设计决策.md) 第七节**，共 22 行，每行都带位置和影响。
+**[docs/设计决策.md](docs/设计决策.md) 第八节**，每行都带位置和影响。
 
-其中最值得先看的三条：
+**2026-10-18 复审已关掉三条**：结束时间早于开始时间会把订单锁死在 3 待结算（`end` 入口校验，
+同秒窗口按 1 秒处理）、退款金额可超过实付（以 `pay_amount` 为上限）、追问检索不到东西
+（查询改写）。修法与对应测试记在决策第九节。
 
-- **`end` 不校验 `endTime` 与 `startTime` 的关系，而 `settle` 要求前者严格大于后者。**
- 校验放错了步骤：该在入口拦的没拦，等到了出口才拒。落进缝里的订单会永久停在 3 待结算，
- `frozenAmount` 里的钱既不扣也不退，**而且那把枪的 `current_order_id` 永远指着它，
- 从此再也建不了单** —— 管理端能把枪改回「空闲」，但没有任何字段能清 `currentOrderId`。
- 已实测复现。
+现在还敞着的，最值得先看三条：
+
+- **设备上报端点挂在管理端 —— 这是一个生产后门。** `start` / `end` 收的是电表读数，谁调谁就
+  决定了这笔单收多少钱；目前只受管理端 JWT 保护，没有设备身份、报文签名、防重放。演示可以，
+  上生产之前必须换掉。
 - **`pay()` 完全不看 `pay_method`。** 现状自洽（`create()` 拦掉了非余额支付），但放开
- `PayMethod.isSupported` 的那一天，一个「微信支付」订单会直接从余额扣钱，而且不报错。
+  `PayMethod.isSupported` 的那一天，一个「微信支付」订单会直接从余额扣钱，而且不报错。
 - **`settle` 的事件来源记成了 `SCHEDULED`，但全项目只有管理端一个调用点。**
- 每一条结算事件都声称是系统自动做的，实际每一次都是运维点的。账没错，错的是叙事。
+  每一条结算事件都声称是系统自动做的，实际每一次都是运维点的。账没错，错的是叙事。
+
+## 文档索引
+
+| 文档 | 里面有什么 |
+|---|---|
+| [docs/设计决策.md](docs/设计决策.md) | 24 条设计决策的完整论证（每条都写了「更简单的做法为什么不行」）+ 已知缺口表 + 复审修复记录。**最值得读的一份** |
+| [docs/核心代码导读.md](docs/核心代码导读.md) | 打开 IDE 跟着走一遍：一笔订单怎么走、钱在哪、枪在哪、每个方法为什么长这样 |
+| [docs/变更记录.md](docs/变更记录.md) | 两轮自审补掉的 11 条缺口，逐条「原来什么样 / 怎么修 / 为什么」 |
+| [web/README.md](web/README.md) | 前端工程（Vue 3 + TS，管理端 + H5）的结构、启动方式与前后端约定 |
 
 ## 一些约定
 
