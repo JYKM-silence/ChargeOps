@@ -31,6 +31,7 @@ Windows PowerShell 把 `export` 换成 `$env:CHARGE_OPS_DB_PORT="13306"`，其�
 
 **目录**
 
+- [界面速览](#界面速览)
 - [为什么这个业务的复杂度是真的](#为什么这个业务的复杂度是真的)
 - [订单生命周期](#订单生命周期)
 - [技术栈](#技术栈)
@@ -45,6 +46,21 @@ Windows PowerShell 把 `export` 换成 `$env:CHARGE_OPS_DB_PORT="13306"`，其�
 - [跑测试](#5-跑测试)
 - [文档索引](#文档索引)
 - [一些约定](#一些约定)
+
+---
+
+## 界面速览
+
+> 截图跑在前端的 mock 模式（`pnpm dev:admin:mock`），数据是前端本地模拟的，不需要后端。
+> 想看真数据就按上面的「5 分钟跑起来」起后端，再用 `pnpm dev:admin` 连过去。
+
+| 管理端 · 工作台 | 管理端 · 订单管理 |
+|---|---|
+| ![工作台](docs/images/admin-dashboard.png) | ![订单管理](docs/images/admin-orders.png) |
+
+| 管理端 · AI 运维助手 | 车主端 H5 |
+|---|---|
+| ![AI 运维助手](docs/images/admin-ai-assistant.png) | ![车主端](docs/images/h5-home.png) |
 
 ---
 
