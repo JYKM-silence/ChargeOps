@@ -159,6 +159,15 @@ public class MessageConstant {
 
     public static final String ORDER_METER_READING_REGRESSED = "结束电表读数小于起始读数，已转入异常挂账";
 
+    /**
+     * 结算时发现 {@code total_energy_kwh} 是空的。
+     *
+     * <p> 和上面两条分开：那两条是 {@code end()} 里算不出电量、随后真的转成了 9 异常挂账；
+     * 这条是 {@code settle()} 里的前置校验，抛出即整个事务回滚，订单原样留在 3 ——
+     * 写「已转入异常挂账」会让客服去 9 里找一笔根本不在那儿的单。
+     */
+    public static final String ORDER_ENERGY_MISSING = "订单缺少用电量，无法结算";
+
     /** {@code 2微信} / {@code 3支付宝} 会走到这里。刻意拒绝，不能把它当成余额扣了钱 */
     public static final String ORDER_PAY_METHOD_UNSUPPORTED = "该支付方式暂未支持，请使用余额支付";
 

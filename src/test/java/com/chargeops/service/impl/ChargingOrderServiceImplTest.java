@@ -798,6 +798,97 @@ class ChargingOrderServiceImplTest {
     }
 
     @Test
+    @DisplayName("★★ 结束时间早于开始时间：入口拒绝，订单留在充电中，钱和枪都不会被卡死")
+    void endTimeBeforeStartShouldBeRejectedBeforeAnyStateChange() {
+        long memberId = loginAsNewMember();
+        givenBalance(memberId, "500.00");
+        Connector connector = givenUsableConnector();
+
+        Long orderId = givenOrder(connector, null);
+        orderService.start(orderId, startDto("1000.0000"));
+
+        // 设备时钟偏慢：结束时刻比服务端记下的开始时刻还早
+        OrderEndDTO dto = endDto("1010.0000", 1);
+        dto.setEndTime(orderMapper.getById(orderId).getStartTime().minusSeconds(1));
+
+        assertThatThrownBy(() -> orderService.end(orderId, dto))
+                .as("★★ 校验必须在 markEnded 之前 —— 否则订单进 3 待结算，settle 永远失败")
+                .isInstanceOf(ParamErrorException.class)
+                .hasMessageContaining("结束时间必须晚于开始时间");
+
+        // ★ 三个「没被破坏」的观测点：状态、结束事实、枪口占用
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CHARGING);
+        assertThat(orderMapper.getById(orderId).getEndTime()).isNull();
+        assertThat(connectorMapper.getById(connector.getId()).getCurrentOrderId())
+                .as("★★ 枪口不能被误释放，否则这笔单的冻结资金就真的没人管了")
+                .isEqualTo(orderId);
+
+        // 校正时间后重报可以走通 —— 入口拒绝是可恢复的，不是死路
+        orderService.end(orderId, endDto("1010.0000", 1));
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.SETTLING);
+    }
+
+    @Test
+    @DisplayName("★ 补录时不带 endTime：和开始落在同一秒要按 1 秒最短窗口处理，不能拒")
+    void endWithoutReportedTimeShouldUseShortestWindowInsteadOfRejecting() {
+        long memberId = loginAsNewMember();
+        givenBalance(memberId, "500.00");
+        Connector connector = givenUsableConnector();
+
+        Long orderId = givenOrder(connector, null);
+        orderService.start(orderId, startDto("1000.0000"));
+
+        // 把开始时刻钉到「现在」：不钉的话 start() 到这里可能已经跨过整秒，
+        // 用例会走到另一条分支，测不到「同秒」这个条件
+        jdbcTemplate.update("UPDATE charging_order SET start_time = ? WHERE id = ?",
+                LocalDateTime.now(), orderId);
+
+        OrderEndDTO dto = new OrderEndDTO();
+        dto.setEndMeterKwh(bd("1010.0000"));
+        dto.setEndSoc(80);
+        dto.setStopReason(1);
+        // ★ 故意不设 endTime：这就是 README 的管理端补录形态，服务端取 now
+
+        orderService.end(orderId, dto);
+
+        ChargingOrder after = orderMapper.getById(orderId);
+        assertThat(OrderStatus.of(after.getStatus())).isEqualTo(OrderStatus.SETTLING);
+        assertThat(after.getDurationSeconds())
+                .as("★★ 不能是 0：截秒后长度为 0 的窗口，BillingEngine 分不出任何一段")
+                .isGreaterThanOrEqualTo(1);
+        assertThat(after.getEndTime())
+                .as("★ 落库的结束时刻必须晚于开始时刻")
+                .isAfter(after.getStartTime());
+
+        // 结算必须真的能走完，否则「不拒」只是把死路从 end 挪到了 settle
+        orderService.settle(orderId);
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.PENDING_PAY);
+    }
+
+    @Test
+    @DisplayName("★★ settle 在错误状态下必须先报状态冲突，不能谎称「已转入异常挂账」")
+    void settleOnChargingOrderShouldReportStatusConflictInsteadOfAbnormalTransfer() {
+        long memberId = loginAsNewMember();
+        givenBalance(memberId, "500.00");
+        Connector connector = givenUsableConnector();
+
+        Long orderId = givenOrder(connector, null);
+        orderService.start(orderId, startDto("1000.0000"));
+
+        // 对着一笔「充电中」的订单调 settle：bill() 会因缺电量失败，但那是回滚，
+        //   订单根本没被转成 9。文案必须说清「当前状态不允许」，而不是「已转入异常挂账」
+        assertThatThrownBy(() -> orderService.settle(orderId))
+                .isInstanceOf(DataConflictException.class)
+                .hasMessageContaining("当前是「充电中」")
+                .hasMessageNotContaining("已转入异常挂账");
+
+        assertThat(statusOf(orderId))
+                .as("★★ 被拒的结算不能改变订单状态")
+                .isEqualTo(OrderStatus.CHARGING);
+        assertThat(segmentCount(orderId)).as("★ 不能留下半截分段").isZero();
+    }
+
+    @Test
     @DisplayName("★ 异常挂账的订单不能再被结算")
     void abnormalOrderShouldNotBeSettleable() {
         long memberId = loginAsNewMember();
@@ -842,6 +933,35 @@ class ChargingOrderServiceImplTest {
         assertThatThrownBy(() -> orderService.refund(orderId, bd("15.00")))
                 .isInstanceOf(DataConflictException.class);
         assertAmount("500.00", wallet(memberId).getBalance(), "★★ 只退一次");
+    }
+
+    @Test
+    @DisplayName("★★ 退款不能超过实付：状态 CAS 只管「只退一次」，管不了「退多少」")
+    void refundShouldNotExceedPaidAmount() {
+        long memberId = loginAsNewMember();
+        givenBalance(memberId, "500.00");
+        Connector connector = givenUsableConnector();
+
+        Long orderId = givenOrder(connector, null);
+        orderService.start(orderId, startDto("1000.0000"));
+        orderService.end(orderId, endDto("1010.0000", 1));
+        orderService.settle(orderId);
+        orderService.pay(orderId);
+        // 10 度 × 1.50 = 实付 15.00，余额 500 − 15 = 485
+        assertAmount("485.00", wallet(memberId).getBalance(), "支付后");
+
+        // ★ 多退 0.01 也必须被拒 —— 否则管理端手滑多打一个 0，钱就凭空进了钱包
+        assertThatThrownBy(() -> orderService.refund(orderId, bd("15.01")))
+                .as("★★ 退款金额必须被订单实付金额压住")
+                .isInstanceOf(ParamErrorException.class)
+                .hasMessageContaining("不能超过");
+        assertThat(statusOf(orderId)).as("被拒的退款不能改订单状态").isEqualTo(OrderStatus.PAID);
+        assertAmount("485.00", wallet(memberId).getBalance(), "★★ 越额退款被拒，钱一分没动");
+
+        // 边界：正好等于实付是合法的
+        orderService.refund(orderId, bd("15.00"));
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.REFUNDED);
+        assertAmount("500.00", wallet(memberId).getBalance(), "全额退回");
     }
 
     // ==================== 权益抵扣 ====================
@@ -954,7 +1074,7 @@ class ChargingOrderServiceImplTest {
         long memberId = loginAsNewMember();
         givenBalance(memberId, "500.00");
         Connector connector = givenUsableConnector();
-        givenDiscountPackage(memberId, "0.8000");
+        MemberPackage pack = givenDiscountPackage(memberId, "0.8000");
 
         Long orderId = givenOrder(connector, null);
         orderService.start(orderId, startDto("1000.0000"));
@@ -965,6 +1085,45 @@ class ChargingOrderServiceImplTest {
         // 抵扣 = round2(服务费 3.00 × (1 − 0.8)) = 0.60
         assertAmount("0.60", after.getDiscountAmount(), "★ 八折 = 让掉两成服务费");
         assertAmount("14.40", after.getPayAmount(), "15.00 − 0.60");
+
+        // ★★ 这条断言不能省。清掉 locked_order_id 的语句只写在 settleEnergy /
+        //    settleDuration / settleTimes 里（释放锁的动作就是「消费」本身），
+        //    而折扣包走不到那三条 —— 一旦写上就是永久的，连带
+        //    voidPackage（退款/作废）和 expireOverdue（过期落库）一起静默失效。
+        assertThat(memberPackageMapper.getById(pack.getId()).getLockedOrderId())
+                .as("★★ 折扣包结算后不能留下 locked_order_id").isNull();
+    }
+
+    @Test
+    @DisplayName("★★ 折扣包不锁：同一份能连续给第二笔订单打折（它是修饰符不是消耗品）")
+    void discountPackageShouldStayUsableForTheNextOrder() {
+        long memberId = loginAsNewMember();
+        givenBalance(memberId, "500.00");
+        MemberPackage pack = givenDiscountPackage(memberId, "0.8000");
+
+        // 第一笔：用掉一次优惠
+        Connector first = givenUsableConnector();
+        Long order1 = givenOrder(first, null);
+        orderService.start(order1, startDto("1000.0000"));
+        orderService.end(order1, endDto("1010.0000", 1));
+        orderService.settle(order1);
+        assertAmount("0.60", orderMapper.getById(order1).getDiscountAmount(), "★ 第一笔八折");
+
+        // 第二笔换一把枪：一把枪同一时刻只挂一笔进行中的订单（assertConnectorFree）
+        Connector second = givenUsableConnector();
+        Long order2 = givenOrder(second, null);
+        orderService.start(order2, startDto("2000.0000"));
+        orderService.end(order2, endDto("2010.0000", 1));
+        orderService.settle(order2);
+
+        // ★★ 这就是本缺陷的表现位：折扣包被锁死时 listUsable 的
+        //    `locked_order_id IS NULL` 让它选不中，第二笔静默按全额 15.00 付，不报错
+        ChargingOrder after = orderMapper.getById(order2);
+        assertAmount("0.60", after.getDiscountAmount(),
+                "★★ 第二笔照样八折 —— 锁死的话这里是 0.00");
+        assertAmount("14.40", after.getPayAmount(), "15.00 − 0.60");
+        assertThat(memberPackageMapper.getById(pack.getId()).getLockedOrderId())
+                .as("折扣包始终不被锁").isNull();
     }
 
     @Test

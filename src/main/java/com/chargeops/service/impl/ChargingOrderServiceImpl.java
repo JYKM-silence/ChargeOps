@@ -70,6 +70,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -458,14 +459,50 @@ public class ChargingOrderServiceImpl implements ChargingOrderService {
     public void end(Long orderId, OrderEndDTO dto) {
         ChargingOrder order = loadOrder(orderId);
         LocalDateTime now = LocalDateTime.now();
-        LocalDateTime endTime = dto.getEndTime() == null ? now : dto.getEndTime();
+        // 设备带了结束时刻就是「设备说的」，没带就是运维在管理端手工补录、取服务端时钟。
+        //   两者的校验口径必须分开：见下面那段「同秒窗口」的说明。
+        boolean deviceReportedTime = dto.getEndTime() != null;
+        LocalDateTime endTime = deviceReportedTime ? dto.getEndTime() : now;
+
+        // 结束时刻必须晚于开始时刻，而且要在写库之前拦。设备时钟偏慢时 endTime 会
+        //   落在 startTime 之前（或同一秒），BillingRequest 截断到整秒后必然拒收；
+        //   等到 settle 才发现就晚了 —— end 已经把订单推进 3 待结算，而 settle 永远
+        //   失败，这笔冻结资金和那把枪就再也没有接口能释放。入口拒绝，设备可以重报。
+        //   比较必须截到整秒：与 BillingRequest 的归一化口径一致，否则 [T, T+0.5s)
+        //   这种窗口在入口被放行、到结算才炸。
+        LocalDateTime billingStart = order.getStartTime() == null
+                ? null : order.getStartTime().truncatedTo(ChronoUnit.SECONDS);
+        LocalDateTime billingEnd = endTime.truncatedTo(ChronoUnit.SECONDS);
+
+        // ★ 手工补录时的「同秒窗口」要向上取整，不能拒。
+        //   没有 endTime 的调用（README 的端到端演示、运维现场补录）如果和 start 落在
+        //   同一秒，截秒后窗口塌成 [T, T)，计费引擎无法把电量分摊到任何一段。这不是
+        //   数据错误，只是秒级分辨率下「充了不到一秒」——拒掉的话订单会停在 2 充电中，
+        //   而设备端根本没有「重报一个更晚的时间」这个动作可做（它本来就没报过时间）。
+        //   所以要按「最短可计费窗口」处理：结束时刻取开始时刻 + 1 秒。
+        //   设备明确报了时间时不做这个兜底：那个时间是可核对的证据，不能用服务端时钟去改。
+        if (!deviceReportedTime && billingStart != null && !billingEnd.isAfter(billingStart)) {
+            billingEnd = billingStart.plusSeconds(1);
+            endTime = billingEnd;
+            log.info("结束时刻与开始时刻落在同一秒，按最短窗口 1 秒处理：orderId={}, start={}, end={}",
+                    orderId, order.getStartTime(), endTime);
+        }
+
+        if (billingStart != null && !billingEnd.isAfter(billingStart)) {
+            throw new ParamErrorException("结束时间必须晚于开始时间：开始 "
+                    + order.getStartTime() + "，结束 " + endTime
+                    + "（设备时钟可能偏慢，请校正后重报）");
+        }
 
         // 电量 = 电表差，不是结束读数本身。电表是累计值，
         //   不会因为换了辆车就归零。
         String meterProblem = checkMeterReadings(order, dto);
 
-        Integer durationSeconds = order.getStartTime() == null ? null
-                : (int) Duration.between(order.getStartTime(), endTime).getSeconds();
+        // 时长也必须用截秒后的窗口算：BillingEngine 的分段时长是截秒后的，
+        //   这里用原始时间会让 duration_seconds 与 Σ segment.duration_seconds
+        //   差一秒（[T.900, T+1.100) 原始差 0.2 秒、截秒后是 1 秒）。
+        Integer durationSeconds = billingStart == null ? null
+                : (int) Duration.between(billingStart, billingEnd).getSeconds();
         BigDecimal energy = meterProblem == null
                 ? dto.getEndMeterKwh().subtract(order.getStartMeterKwh())
                 : null;
@@ -508,6 +545,16 @@ public class ChargingOrderServiceImpl implements ChargingOrderService {
     public void settle(Long orderId) {
         ChargingOrder order = loadOrder(orderId);
         LocalDateTime now = LocalDateTime.now();
+
+        // ★ 先判状态，再算钱。少了这一步，对着一笔 2 充电中的订单调 settle 会走到 bill()
+        //   并抛出「缺少电表读数…已转入异常挂账」—— 那句话在这里是假的：bill() 抛出后
+        //   整个事务回滚，订单仍是 2、冻结一分没动，根本没转挂账。调用方 / 客服看到
+        //   「已转入异常挂账」会去 9 状态里找这笔单，找不到。
+        //   和 end() 一样，真正的并发裁决仍是 markSettled 的 CAS；这里只是让非并发场景
+        //   报出「当前是充电中，要求待结算」，而不是一句错误的后果描述。
+        if (order.getStatus() == null || order.getStatus() != OrderStatus.SETTLING.getCode()) {
+            throw statusConflict(order, OrderStatus.SETTLING, OrderStatus.PENDING_PAY);
+        }
 
         // ① 纯计算。失败（电价规则有缺口）时抛异常让整个事务回滚 ——
         //    订单留在 3 待结算，可以重试。只有「重试也不会好」的才转 9，
@@ -572,6 +619,18 @@ public class ChargingOrderServiceImpl implements ChargingOrderService {
     public void refund(Long orderId, BigDecimal amount) {
         ChargingOrder order = loadOrder(orderId);
         LocalDateTime now = LocalDateTime.now();
+
+        // 退款不能超过实付。状态 CAS 只保证「只退一次」，管不了「退多少」：
+        //   管理端把 15.00 打成 150.00，钱包会凭空多出 135.00，而订单状态、
+        //   流水、事件三处都显示这笔退款「合法」。上限只能在这里拦。
+        //   pay_amount 是 V3 才有的快照，老单为 NULL 时退回 total_amount；
+        //   两者都没有才放弃上限（只剩 DTO 的 10 万防手滑），不猜一个数。
+        BigDecimal paidAmount = order.getPayAmount() != null
+                ? order.getPayAmount() : order.getTotalAmount();
+        if (amount != null && paidAmount != null && amount.compareTo(paidAmount) > 0) {
+            throw new ParamErrorException("退款金额不能超过订单实付金额：申请退款 "
+                    + amount + "，订单实付 " + paidAmount + "，orderNo=" + order.getOrderNo());
+        }
 
         // 只有 5 已支付能退。4 待支付的时候钱还没扣，
         //   那时候要「退」的是冻结的钱，走的是取消 / 挂账
@@ -779,11 +838,37 @@ public class ChargingOrderServiceImpl implements ChargingOrderService {
      *
      * <p>遍历所有类型、每种都试，抢不到就换下一个。中途 {@code break} 会让只有
      * 时长包的车主因为「电量包这一类空着」而被跳过，且日志里什么都看不到。
+     *
+     * <p><b>例外：折扣包只选不锁</b>（{@link PackageType#SERVICE_DISCOUNT}）——
+     * 方法名里的「lock」对它不成立，这是刻意的，理由见下面那段注释。它的
+     * {@code locked_order_id} 在数据库里恒为 NULL，见 {@code MemberPackage} 类注释。
      */
     private Long tryLockPackage(Long memberId, Long orderId, LocalDateTime now) {
         for (PackageType type : PackageType.values()) {
             List<MemberPackage> candidates = memberPackageMapper.listUsable(
                     memberId, type.getCode(), now);
+
+            // 折扣包只选不锁。它是修饰符不是消耗品（见 MemberPackage 类注释），
+            //   有效期内本来就该被多笔订单共用，锁它没有意义。
+            //
+            //   更要紧的是：锁上就再没人放。清掉 locked_order_id 的语句在
+            //   settleEnergy / settleDuration / settleTimes 这三条 SQL 里 —— 释放锁的
+            //   动作就是「消费」本身。而折扣包走不到它们：applyPackage 在折扣分支就
+            //   return 了，consumePackage 的 `case SERVICE_DISCOUNT -> 1` 恒不执行。
+            //   于是 locked_order_id 一旦写上就是永久的，而 listUsable / voidPackage /
+            //   expireOverdue 三条路径又都要求 locked_order_id IS NULL，会一起静默失效：
+            //     第二笔订单再也选不中它（按全额付）、客服退款和作废永远影响 0 行、
+            //     过期后 status 永远停在 1（车主端一直显示生效中）。全程不报错。
+            if (type == PackageType.SERVICE_DISCOUNT) {
+                if (candidates.isEmpty()) {
+                    continue;
+                }
+                MemberPackage picked = candidates.get(0);
+                log.info("订单选用折扣包（不加锁）：orderId={}, packageId={}",
+                        orderId, picked.getId());
+                return picked.getId();
+            }
+
             for (MemberPackage candidate : candidates) {
                 if (memberPackageMapper.lockForOrder(candidate.getId(), orderId, now) > 0) {
                     log.info("订单锁定权益：orderId={}, packageId={}, type={}",
@@ -815,7 +900,9 @@ public class ChargingOrderServiceImpl implements ChargingOrderService {
      */
     private BillingResult bill(ChargingOrder order) {
         if (order.getTotalEnergyKwh() == null) {
-            throw new DataConflictException(MessageConstant.ORDER_METER_READING_MISSING
+            // 不能复用 end() 那条「已转入异常挂账」：这里是 settle 的前置校验，
+            //   抛出后事务回滚，订单仍在 3，没有任何东西被转成 9
+            throw new DataConflictException(MessageConstant.ORDER_ENERGY_MISSING
                     + "：orderId=" + order.getId());
         }
         if (order.getStartTime() == null || order.getEndTime() == null) {
