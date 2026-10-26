@@ -2,6 +2,8 @@ package com.chargeops.service.impl;
 
 import com.chargeops.context.BaseContext;
 import com.chargeops.constant.MessageConstant;
+import com.chargeops.constant.RedisConstant;
+import com.chargeops.dto.StationUpdateDTO;
 import com.chargeops.entity.Charger;
 import com.chargeops.entity.ChargingOrder;
 import com.chargeops.entity.Station;
@@ -10,6 +12,7 @@ import com.chargeops.exception.DataConflictException;
 import com.chargeops.mapper.ChargerMapper;
 import com.chargeops.mapper.ChargingOrderMapper;
 import com.chargeops.mapper.StationMapper;
+import com.chargeops.redis.CacheClient;
 import com.chargeops.service.StationService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -19,6 +22,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -146,6 +150,9 @@ class StationServiceImplTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private CacheClient cacheClient;
+
     /** 本类造出来的 member_id 下界。2e12/3e12/4e12/5e12/8e12 已被别的测试类占用 */
     private static final long TEST_ID_BASE = 6_000_000_000_000L;
 
@@ -165,6 +172,10 @@ class StationServiceImplTest {
 
     @AfterEach
     void cleanUp() {
+        List<Long> stationIds = jdbcTemplate.queryForList(
+                "SELECT id FROM station WHERE code LIKE ?", Long.class, STATION_CODE_PREFIX + "%");
+        stationIds.forEach(id -> cacheClient.delete(RedisConstant.CACHE_STATION_PREFIX + id));
+
         // ★ 子表在前、父表在后。带子查询的那几条尤其要注意顺序：
         //   `charger WHERE station_id IN (SELECT id FROM station ...)` 要靠父行【还在】
         //   才查得到子行的 id —— 父行先删掉的话，子查询返回空集、DELETE 影响 0 行，
@@ -189,6 +200,23 @@ class StationServiceImplTest {
         jdbcTemplate.update("DELETE FROM station WHERE code LIKE ?", STATION_CODE_PREFIX + "%");
 
         BaseContext.removeCurrentId();
+    }
+
+    @Test
+    @DisplayName("站点详情命中缓存后，更新事务提交再失效缓存")
+    void updateShouldInvalidateCachedStationAfterCommit() {
+        login();
+        Station station = givenStation();
+
+        assertThat(stationService.getById(station.getId()).getName())
+                .isEqualTo("删除守卫测试站点");
+
+        StationUpdateDTO update = new StationUpdateDTO();
+        update.setName("更新后的站点名称");
+        stationService.update(station.getId(), update);
+
+        assertThat(stationService.getById(station.getId()).getName())
+                .isEqualTo("更新后的站点名称");
     }
 
     // ==================== 工具方法 ====================

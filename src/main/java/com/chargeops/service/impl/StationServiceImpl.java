@@ -1,6 +1,7 @@
 package com.chargeops.service.impl;
 
 import com.chargeops.constant.MessageConstant;
+import com.chargeops.constant.RedisConstant;
 import com.chargeops.dto.StationDTO;
 import com.chargeops.dto.StationPageQueryDTO;
 import com.chargeops.dto.StationUpdateDTO;
@@ -14,6 +15,7 @@ import com.chargeops.mapper.ChargerMapper;
 import com.chargeops.mapper.ChargingOrderMapper;
 import com.chargeops.mapper.StationMapper;
 import com.chargeops.result.PageResult;
+import com.chargeops.redis.CacheClient;
 import com.chargeops.service.StationService;
 import com.chargeops.utils.TimeCodec;
 import com.chargeops.vo.StationVO;
@@ -25,8 +27,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.core.type.TypeReference;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 充电站服务实现
@@ -49,6 +53,8 @@ public class StationServiceImpl implements StationService {
      */
     private final ChargingOrderMapper orderMapper;
 
+    private final CacheClient cacheClient;
+
     @Override
     @Transactional
     public Long create(StationDTO stationDTO) {
@@ -70,6 +76,10 @@ public class StationServiceImpl implements StationService {
         assertBusinessHours(station.getOpenTime(), station.getCloseTime());
 
         stationMapper.insert(station);
+
+        // 新 id 通常不会有缓存，但有人可能提前查询过自增 id 并命中空值缓存；
+        // 提交后删掉它，避免创建成功后短时间内仍被当成不存在。
+        cacheClient.deleteAfterCommit(RedisConstant.CACHE_STATION_PREFIX + station.getId());
 
         log.info("新增充电站成功：id={}, code={}", station.getId(), station.getCode());
         return station.getId();
@@ -105,6 +115,7 @@ public class StationServiceImpl implements StationService {
         // 不预检「这一行是否存在」：id 不存在时影响行数为 0 且不报错，
         // 而「改一个不存在的站点」和「改一个没改到任何字段的站点」本该表现一致。
         stationMapper.update(station);
+        cacheClient.deleteAfterCommit(RedisConstant.CACHE_STATION_PREFIX + id);
 
         log.info("修改充电站：id={}", id);
     }
@@ -115,12 +126,23 @@ public class StationServiceImpl implements StationService {
         requireStation(id);
         assertDeletable(id);
         stationMapper.deleteById(id);
+        cacheClient.deleteAfterCommit(RedisConstant.CACHE_STATION_PREFIX + id);
         log.info("删除充电站：id={}", id);
     }
 
     @Override
     public StationVO getById(Long id) {
-        return toVo(requireStation(id));
+        StationVO station = cacheClient.queryWithPassThrough(
+                RedisConstant.CACHE_STATION_PREFIX,
+                id,
+                new TypeReference<StationVO>() {},
+                this::findStationVO,
+                15L,
+                TimeUnit.MINUTES);
+        if (station == null) {
+            throw new NotFoundException(MessageConstant.STATION_NOT_FOUND);
+        }
+        return station;
     }
 
     @Override
@@ -152,6 +174,12 @@ public class StationServiceImpl implements StationService {
             throw new NotFoundException(MessageConstant.STATION_NOT_FOUND);
         }
         return station;
+    }
+
+    /** 缓存未命中时的数据库回退。返回 VO，避免把审计字段写进 Redis。 */
+    private StationVO findStationVO(Long id) {
+        Station station = stationMapper.getById(id);
+        return station == null ? null : toVo(station);
     }
 
     /**

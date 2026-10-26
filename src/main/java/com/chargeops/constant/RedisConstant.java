@@ -8,6 +8,9 @@ public class RedisConstant {
     /** {@code CacheClient} 内部重建缓存时会拼这个前缀，它必须存在 */
     public static final String LOCK_KEY_PREFIX = "lock:";
 
+    /** 站点详情缓存：仅缓存按 id 查询的详情，不缓存分页结果，避免组合条件与分页参数造成复杂失效 */
+    public static final String CACHE_STATION_PREFIX = "cache:station:";
+
     /** 启动充电时的枪口锁。只削峰，正确性由 {@code ConnectorMapper.occupy} 的条件更新保证。目前没有调用方，接线时用 {@code CacheClient.tryLock} */
     public static final String LOCK_CONNECTOR_START = "lock:connector:start:";
 
