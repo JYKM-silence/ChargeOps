@@ -14,6 +14,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -130,13 +131,20 @@ class VehicleMapperTest {
         return id;
     }
 
+    /** 车牌尾部序号：只靠 nanoTime 取模会在同一个时钟刻度内撞号 */
+    private static final AtomicInteger PLATE_SEQ = new AtomicInteger();
+
     /**
      * 造一个车牌号
      *
-     * <p>★ 用纳米时间做后缀，避免同一个测试方法里连造几辆时自己和自己撞唯一键。
+     * <p>★ 不能只用 {@code nanoTime % 100_000}：Windows 上连续两次调用的
+     * {@code nanoTime} 可能落在同一个时钟刻度里，于是同一个测试方法里连造两辆车会拿到
+     * 同一个车牌，直接撞 {@code uk_vehicle_member_plate} —— 表现是「偶发红一次、
+     * 重跑又好了」，而根因和被测 SQL 毫无关系。加一个进程内自增序号把这条缝堵死。
      */
     private String uniquePlate() {
-        return "粤BD" + (System.nanoTime() % 100_000L);
+        return String.format("粤BD%05d%03d",
+                System.nanoTime() % 100_000L, PLATE_SEQ.incrementAndGet() % 1000);
     }
 
     private Vehicle insertVehicle(Long memberId, String plateNo, Integer isDefault) {
