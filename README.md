@@ -5,6 +5,7 @@
 [![MySQL](https://img.shields.io/badge/MySQL-8.4-4479A1?logo=mysql&logoColor=white)](https://www.mysql.com/)
 [![Redis](https://img.shields.io/badge/Redis-7.4-DC382D?logo=redis&logoColor=white)](https://redis.io/)
 [![Tests](https://img.shields.io/badge/tests-421%20passed-brightgreen)](#5-跑测试)
+[![CI](https://github.com/JYKM-silence/ChargeOps/actions/workflows/ci.yml/badge.svg)](https://github.com/JYKM-silence/ChargeOps/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 面向充电站运营商的后端系统：站点 / 充电桩 / 充电枪管理、**分时电价计费**、扫码充电的完整订单链路、
