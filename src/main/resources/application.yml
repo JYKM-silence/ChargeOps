@@ -113,17 +113,27 @@ pagehelper:
     pageSize: pageSize
 
 chargeops:
+  login-rate-limit:
+    # IP 维度限制所有通过 DTO 校验的登录请求，抵御单一来源的高频请求。
+    enabled: true
+    ip-max-attempts: 30
+    ip-window: 10m
+    # 账号维度只累计认证失败；连续失败达到上限后，在窗口内暂时拒绝继续尝试。
+    account-max-failures: 5
+    account-window: 15m
+
   jwt:
     # 密钥 UTF-8 编码后必须 ≥ 32 字节（HS256 的要求，jjwt 0.12 起不够就抛 WeakKeyException）——
     # 症状是应用能正常启动、数据库 Redis 都连得上，只有调登录接口那一刻 500。
     # 两把密钥不能共用：共用的话车主端小程序被逆向、密钥泄露就能签出 staffId=1 的 token 拿管理员权限。
-    # 这两个是开发用假密钥；生产用没有默认值的环境变量，见 application-prod.yml
-    admin-secret-key: chargeops-dev-admin-secret-key-not-for-production-use-2026
+    # 这两个是开发用假密钥，且**优先读环境变量**：生产 profile 里没有默认值（见 application-prod.yml），
+    # 本地想换一把也不用改这个文件。写死默认值是为了 clone 下来零配置能跑。
+    admin-secret-key: ${CHARGE_OPS_ADMIN_SECRET:chargeops-dev-admin-secret-key-not-for-production-use-2026}
     # 2 小时。管理端是内部人员使用
     admin-ttl: 7200000
     admin-token-name: token
 
-    member-secret-key: chargeops-dev-member-secret-key-not-for-production-use-2026
+    member-secret-key: ${CHARGE_OPS_MEMBER_SECRET:chargeops-dev-member-secret-key-not-for-production-use-2026}
     # 7 天。车主端是小程序，用户不希望在充电站现场被要求重新登录
     member-ttl: 604800000
     # 车主端从哪个请求头取 token。名字本身无所谓，重要的是前端和后端必须一致 ——
@@ -145,6 +155,31 @@ chargeops:
     # 同时被 LocalFileStorage（拼 URL）和 WebMvcConfiguration（注册静态资源映射）使用，必须一致。
     # 不要配成 /api 开头 —— 那个前缀被 JWT 拦截器盯着，图片会全部裂掉且日志里一条报错都没有
     url-path: /img
+
+  ai-ops:
+    # 向量库的连接信息在 profile 里（application-dev.yml / application-prod.yml），
+    # 和 MySQL、Redis 一样属于环境属性。这里放的是不随环境变的检索质量参数。
+
+    # 相似度下限，低于它的片段不进提示词，也不出现在检索探针里。
+    #
+    # 0.0 表示不过滤，也就是「检索到什么就给什么」，模型只靠系统提示词里那句
+    # 「资料里没有的就说没有」兜着。
+    #
+    # ⚠️ 0.0 是当前的**未标定值**，不是量出来的结果。标定它需要本机 Ollama 装好
+    # bge-m3、pgvector 容器在跑，然后：
+    #   mvn test -Dtest=RagRetrievalEvalTest -Drag.eval=true
+    # 输出里有一张阈值扫描表（每个阈值下的 recall@1/recall@4/MRR 和否定样本误召回）
+    # 和两端分数（命中条目的最低分 vs 否定样本的最高分），阈值取在两者之间。
+    # 调高会让部分弱相关但真有用的召回一起消失，所以那两个数要一起看。
+    # 标定完把结果记进 README 的「检索质量」一节（那一节现在写的是「阈值的实测值待补」）。
+    # 为什么宁可留着 0.0：仓库里不留没量过的正数 —— 一个看起来像调过的阈值，
+    # 下一个人会以为它有数据支撑，比明摆着的 0.0 危险。
+    similarity-threshold: 0.0
+
+    rewrite:
+      # 追问改写：把「那第二点具体怎么做」用会话历史补全成能独立检索的问题。
+      # 关掉它检索就完全按原问题走 —— 评估表里「追问组」那一行量的就是这两种情况的差。
+      enabled: true
 
   scheduled:
     # 这里放「多久扫一次」这类业务参数；「这个环境跑不跑任务」的开关在

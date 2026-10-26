@@ -2,10 +2,14 @@ package com.chargeops.controller.admin;
 
 import com.chargeops.dto.StaffLoginDTO;
 import com.chargeops.result.Result;
+import com.chargeops.exception.AccountNotFoundException;
+import com.chargeops.exception.PasswordErrorException;
+import com.chargeops.service.LoginRateLimitService;
 import com.chargeops.service.StaffService;
 import com.chargeops.vo.StaffLoginVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -24,9 +28,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class AuthController {
 
     private final StaffService staffService;
+    private final LoginRateLimitService loginRateLimitService;
 
-    public AuthController(StaffService staffService) {
+    public AuthController(StaffService staffService, LoginRateLimitService loginRateLimitService) {
         this.staffService = staffService;
+        this.loginRateLimitService = loginRateLimitService;
     }
 
     /**
@@ -35,8 +41,13 @@ public class AuthController {
      */
     @PostMapping("/login")
     @Operation(summary = "管理端登录", description = "返回 JWT 令牌，后续请求放在请求头 token 中")
-    public Result<StaffLoginVO> login(@RequestBody @Valid StaffLoginDTO staffLoginDTO) {
-        return Result.success(staffService.login(staffLoginDTO));
+    public Result<StaffLoginVO> login(@RequestBody @Valid StaffLoginDTO staffLoginDTO,
+                                      HttpServletRequest request) {
+        return Result.success(loginRateLimitService.execute(
+                request.getRemoteAddr(), staffLoginDTO.getUsername(),
+                () -> staffService.login(staffLoginDTO),
+                exception -> exception instanceof AccountNotFoundException
+                        || exception instanceof PasswordErrorException));
     }
 }
 

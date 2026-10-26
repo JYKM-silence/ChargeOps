@@ -2,12 +2,17 @@ package com.chargeops.controller.user;
 
 import com.chargeops.dto.MemberLoginDTO;
 import com.chargeops.dto.MemberRegisterDTO;
+import com.chargeops.exception.AccountNotFoundException;
+import com.chargeops.exception.LoginFailedException;
+import com.chargeops.exception.PasswordErrorException;
 import com.chargeops.result.Result;
+import com.chargeops.service.LoginRateLimitService;
 import com.chargeops.service.MemberService;
 import com.chargeops.vo.MemberLoginVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -33,9 +38,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class MemberAuthController {
 
     private final MemberService memberService;
+    private final LoginRateLimitService loginRateLimitService;
 
-    public MemberAuthController(MemberService memberService) {
+    public MemberAuthController(MemberService memberService, LoginRateLimitService loginRateLimitService) {
         this.memberService = memberService;
+        this.loginRateLimitService = loginRateLimitService;
     }
 
     /** 手机号重复不预检，由 {@code uk_member_phone} 挡；{@code @Valid} 上的手机号正则是承重的，少了它打错的号码会永久占用 */
@@ -45,10 +52,16 @@ public class MemberAuthController {
         return Result.success(memberService.register(memberRegisterDTO));
     }
 
-    /** 「手机号没注册」和「密码错误」返回同一句，但「该账号未设置密码」单独一句；登录接口目前没有限流 */
+    /** 「手机号没注册」和「密码错误」返回同一句，但「该账号未设置密码」单独一句 */
     @PostMapping("/login")
     @Operation(summary = "车主登录", description = "返回 JWT 令牌，后续请求放在请求头 authentication 中")
-    public Result<MemberLoginVO> login(@Valid @RequestBody MemberLoginDTO memberLoginDTO) {
-        return Result.success(memberService.login(memberLoginDTO));
+    public Result<MemberLoginVO> login(@Valid @RequestBody MemberLoginDTO memberLoginDTO,
+                                       HttpServletRequest request) {
+        return Result.success(loginRateLimitService.execute(
+                request.getRemoteAddr(), memberLoginDTO.getPhone(),
+                () -> memberService.login(memberLoginDTO),
+                exception -> exception instanceof AccountNotFoundException
+                        || exception instanceof PasswordErrorException
+                        || exception instanceof LoginFailedException));
     }
 }

@@ -103,8 +103,7 @@ public class MemberServiceImpl implements MemberService {
      *
      * <p> 四个检查的顺序有讲究：手机号存在吗 → 账号被禁用了吗 → 设过密码吗 → 密码对吗
      * （BCrypt 校验，故意设计得慢，约 100ms）。把最慢的一步放最后，前三种失败就不会消耗
-     * BCrypt 的计算量 —— 登录接口没有限流（已记入 README 的已知缺口表），否则攻击者可以
-     * 用大量不存在的手机号白烧服务端 CPU。
+     * BCrypt 的计算量；Controller 外层还有 Redis IP 限流，账号维度累计认证失败并触发冷却。
      *
      * <p> 第 3 步必须显式判空，不能依赖 {@code matches(raw, null)} 的返回值：它现在确实
      * 返回 false，但那是实现细节不是契约，而且那个分支还会打一行 WARN。
