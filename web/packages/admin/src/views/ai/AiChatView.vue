@@ -32,6 +32,11 @@ interface ChatMessage {
   text: string
   /** 只有助手消息有。空数组 = 这一轮没召回任何片段，本身就是信息。 */
   references?: KnowledgeChunkVO[] | null
+  /**
+   * 只有**发生过改写**的追问才有值（= 后端实际检索用的那句）。
+   * 和用户提问一样时不存：那一行显示出来只是噪音。
+   */
+  retrievalQuery?: string | null
   /** 这一轮失败了（超时/网络/后端报错）。用来在时间线上留痕，而不是只弹一个会消失的 toast。 */
   failed?: boolean
 }
@@ -91,7 +96,13 @@ async function send(preset?: string): Promise<void> {
     if (!vo) return // 理论上不会：失败会抛，这里只是把可空类型收窄
 
     sessionId.value = vo.sessionId
-    messages.value.push({ role: 'assistant', text: vo.answer, references: vo.references })
+    messages.value.push({
+      role: 'assistant',
+      text: vo.answer,
+      references: vo.references,
+      // 改写没发生（retrievalQuery 就是原问题）时不带这一条，界面上不多一行字
+      retrievalQuery: vo.retrievalQuery === question ? null : vo.retrievalQuery,
+    })
   } catch {
     // 错误提示由 http 层统一弹过了，这里只在时间线上留一条痕。
     messages.value.push({
@@ -317,6 +328,12 @@ watch(() => messages.value.length, () => void scrollToBottom())
                     </template>
                     <template v-else>这一轮没有召回知识库内容</template>
                   </summary>
+
+                  <!-- ★ 追问被改写过时，必须显示这一轮按什么检索的：
+                       召回的片段是照着这句来的，不写出来就对不上账。 -->
+                  <p v-if="m.retrievalQuery" class="ref-query">
+                    追问已改写，本次按「{{ m.retrievalQuery }}」检索
+                  </p>
 
                   <ul v-if="m.references && m.references.length" class="ref-list">
                     <li v-for="(r, ri) in m.references" :key="ri">
@@ -702,6 +719,13 @@ watch(() => messages.value.length, () => void scrollToBottom())
   margin: 10px 0 0;
   font-size: 12px;
   line-height: 1.65;
+  color: var(--co-text-3);
+}
+
+.ref-query {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
   color: var(--co-text-3);
 }
 

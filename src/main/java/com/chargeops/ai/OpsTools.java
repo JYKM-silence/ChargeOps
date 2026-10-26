@@ -40,11 +40,23 @@ import java.util.List;
  * <p> 时间都补一个「距今多久」。模型不擅长做日期减法，而「最后心跳是 3 小时前」
  * 和「是 3 小时前的某个绝对时刻」对它判断离线与否完全是两回事。
  *
- * <p> 这个类上不要再加 {@code @Transactional} 这类会生成代理的注解。ChatClient 的
- * {@code .tools(bean)} 最终走 {@code ToolCallbacks.from}，它按 bean 的类直接读方法上的
- * {@code @Tool}，不做 AOP 的方法解析（做解析的是另一个入口 {@code MethodToolCallbackProvider}）。
- * 代理之后注解读不到，失败方式是工具静默地一个都不注册，日志里什么都没有。
- * 这里的写操作只有一条 INSERT，本来也不需要事务。
+ * <p> 这个类上不需要 {@code @Transactional}：每个工具方法只做「查一下 / 写一条」，
+ * 没有跨表跨资源的原子性需求，而且写操作只有一条 INSERT。不需要就别加，见
+ * {@code docs/设计决策.md} 决策 21。
+ *
+ * <p> <b>更正</b>：这里曾经写过一条错误的警告 —— 说「加了 {@code @Transactional}
+ * 会生成代理，代理之后 {@code @Tool} 读不到，工具会静默地一个都不注册」。这是错的，
+ * 反编译 {@code spring-ai-model-2.0.1.jar} 核实过：
+ * <ul>
+ *   <li>{@code .tools(bean)} 走 {@code ToolCallbacks.from}，它内部<b>就是</b>委托给
+ *       {@code MethodToolCallbackProvider} —— 不是两个并列的入口。</li>
+ *   <li>后者的构造器断言里做的是
+ *       {@code AopUtils.isAopProxy(obj) ? AopUtils.getTargetClass(obj) : obj.getClass()}，
+ *       <b>代理会被剥到目标类</b>，方法注解照样读得到。</li>
+ *   <li>真读不到时抛 {@code IllegalArgumentException}
+ *       （{@code "No @Tool annotated methods found in ..."}）——
+ *       是启动级别的响亮失败，不是静默。</li>
+ * </ul>
  */
 @Component
 @RequiredArgsConstructor

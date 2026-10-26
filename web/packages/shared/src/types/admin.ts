@@ -789,6 +789,14 @@ export interface AiChatDTO {
 export interface AiChatVO {
   sessionId: string
   answer: string
+  /**
+   * 这一轮**实际拿去检索**的问题。
+   *
+   * 追问会被后端用会话历史改写后再检索（「那第二点具体怎么做」→ 一句能独立检索的
+   * 完整问题），这时它和用户问的那句不一样：召回结果取决于它，不显示的话
+   * 「问的是 A、召回的却是别的东西」看起来像检索坏了。
+   */
+  retrievalQuery: string | null
   references: KnowledgeChunkVO[] | null
 }
 

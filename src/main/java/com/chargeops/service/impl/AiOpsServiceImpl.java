@@ -1,9 +1,11 @@
 package com.chargeops.service.impl;
 
 import com.chargeops.ai.OpsTools;
+import com.chargeops.ai.QueryRewriter;
 import com.chargeops.constant.MessageConstant;
 import com.chargeops.dto.AiChatDTO;
 import com.chargeops.exception.AiUnavailableException;
+import com.chargeops.exception.BaseException;
 import com.chargeops.properties.AiOpsProperties;
 import com.chargeops.service.AiOpsService;
 import com.chargeops.service.KnowledgeBaseService;
@@ -28,9 +30,9 @@ import java.util.UUID;
  * 而知识片段属于这一轮的提示词 —— 存进去的话，第三轮会带着第一轮召回的文档一起发给模型，
  * 上下文越滚越大，而且模型可能拿旧文档回答新问题。
  *
- * <p> 已知短板：追问里的指代检索不到东西。「那第二点具体怎么做」整句拿去向量化，
- * 和任何文档片段都不像，所以那一轮召回是空的，模型只能靠会话历史答。
- * 要修的话得先用历史把问题改写成一个完整的问题再检索（多一次模型调用），这一步没做。
+ * <p> 追问先过一遍 {@link QueryRewriter}：「那第二点具体怎么做」整句拿去向量化，
+ * 和任何文档片段都不像，那一轮就会召回空。改写后的问题只用来检索，
+ * 发给模型的仍然是用户原话 —— 模型手里有完整会话历史，不需要改写版。
  */
 @Service
 @RequiredArgsConstructor
@@ -62,6 +64,8 @@ public class AiOpsServiceImpl implements AiOpsService {
 
     private final KnowledgeBaseService knowledgeBaseService;
 
+    private final QueryRewriter queryRewriter;
+
     private final AiOpsProperties aiOpsProperties;
 
     private final OpsTools opsTools;
@@ -74,22 +78,37 @@ public class AiOpsServiceImpl implements AiOpsService {
                 ? dto.getSessionId()
                 : UUID.randomUUID().toString();
 
-        List<Document> docs = knowledgeBaseService.search(dto.getQuestion(), aiOpsProperties.getTopK());
+        String retrievalQuery = queryRewriter.rewriteForRetrieval(sessionId, dto.getQuestion());
+        List<Document> docs = knowledgeBaseService.search(retrievalQuery, aiOpsProperties.getTopK());
 
-        String answer = chatClient.prompt()
-                .system(systemPrompt(docs))
-                .user(dto.getQuestion())
-                // 会话 id 走 advisor 的参数，不拼进提示词：它是记忆的分片键，
-                // 拼进去模型会把它当内容，还多占 token
-                .advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, sessionId))
-                .tools(opsTools)
-                .call()
-                .content();
+        String answer;
+        try {
+            answer = chatClient.prompt()
+                    .system(systemPrompt(docs))
+                    // 发原话不发改写版：改写只解决「检索找不到」，模型这边有完整历史，
+                    // 换成改写版反而可能把用户真正问的意思改没了
+                    .user(dto.getQuestion())
+                    // 会话 id 走 advisor 的参数，不拼进提示词：它是记忆的分片键，
+                    // 拼进去模型会把它当内容，还多占 token
+                    .advisors(advisor -> advisor.param(ChatMemory.CONVERSATION_ID, sessionId))
+                    .tools(opsTools)
+                    .call()
+                    .content();
+        } catch (BaseException e) {
+            // 工具或下游已经给出了明确的业务结论，不要把它盖成「AI 不可用」
+            throw e;
+        } catch (RuntimeException e) {
+            // Ollama 没起来 / 超时 / 模型返回解析不了：都是 MessageConstant.AI_UNAVAILABLE
+            //   描述的那一类，给调用方一句「稍后重试或手工录入」比「未知错误」有用得多
+            log.warn("AI 调用失败，本轮按不可用处理：sessionId={}，原因：{}",
+                    sessionId, e.getMessage());
+            throw new AiUnavailableException(MessageConstant.AI_UNAVAILABLE);
+        }
 
         log.info("AI 问答完成：sessionId={}, 召回 {} 个片段, 回答 {} 字",
                 sessionId, docs.size(), answer == null ? 0 : answer.length());
 
-        return new AiChatVO(sessionId, answer, toChunks(docs));
+        return new AiChatVO(sessionId, answer, retrievalQuery, toChunks(docs));
     }
 
     @Override

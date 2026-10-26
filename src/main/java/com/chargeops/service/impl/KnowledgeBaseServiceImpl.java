@@ -79,7 +79,16 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
     @Override
     public int reload() {
-        VectorStore vectorStore = requireVectorStore();
+        VectorStore vectorStore;
+        try {
+            vectorStore = requireVectorStore();
+        } catch (AiUnavailableException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            // 向量库 bean 是 @Lazy 的，第一次 getIfAvailable() 才真正连 PG 建表，
+            //   所以「PG 没起来」这条路径就落在这里
+            throw unavailable(e, "创建向量库");
+        }
 
         int total = 0;
         for (String source : SOURCES) {
@@ -87,8 +96,13 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
             // 先删后写，重复执行不会让片段翻倍。按 source 删而不是清空整表：
             // 以后会有别的来源（工单摘要之类）进来，清空会把它们一起带走
-            vectorStore.delete(new FilterExpressionBuilder().eq(KEY_SOURCE, source).build());
-            vectorStore.add(chunks);
+            try {
+                vectorStore.delete(new FilterExpressionBuilder().eq(KEY_SOURCE, source).build());
+                vectorStore.add(chunks);
+            } catch (RuntimeException e) {
+                // add/delete 要调 Ollama 做向量化，Ollama 没起来就是这条路径
+                throw unavailable(e, "写入知识库 " + source);
+            }
 
             total += chunks.size();
             log.info("知识库写入 {}：{} 个片段", source, chunks.size());
@@ -98,8 +112,22 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
     @Override
     public List<Document> search(String query, int topK) {
-        return requireVectorStore().similaritySearch(
-                SearchRequest.builder().query(query).topK(topK).build());
+        try {
+            return requireVectorStore().similaritySearch(SearchRequest.builder()
+                    .query(query)
+                    .topK(topK)
+                    // 阈值也管「只检索不生成」那个排查接口：它要回答的问题正是
+                    // 「模型看到的资料长什么样」，线上过滤掉、探针里还显示，就没法排查了
+                    .similarityThreshold(aiOpsProperties.getSimilarityThreshold())
+                    .build());
+        } catch (AiUnavailableException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            // PG 没起（JDBC 异常）、Ollama 没起 / 超时（HTTP 异常）都落在这里。
+            //   不翻译的话接口只会给出兜底的「未知错误」，而这两件事都是可预期的
+            //   依赖缺位，不该按系统异常处理，更不该让运维去翻代码。
+            throw unavailable(e, "检索知识库");
+        }
     }
 
     /** 按 {@code ## } 切。一级标题及其下面的前言不进库：那几行是给人看的文档说明，不是运维知识 */
@@ -149,5 +177,16 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             throw new AiUnavailableException(MessageConstant.AI_NOT_ENABLED);
         }
         return vectorStore;
+    }
+
+    /**
+     * 把向量库 / 向量模型的运行时异常翻译成「AI 这次用不了」。
+     *
+     * <p> 用 warn 不打堆栈：PG 没起、Ollama 没装都是可选依赖的正常缺位，每次请求都甩一段
+     * {@code BeanCreationException} 只会把真正的系统异常淹掉。根因留在 message 里。
+     */
+    private AiUnavailableException unavailable(RuntimeException cause, String action) {
+        log.warn("AI 依赖不可用，{}失败：{}", action, cause.getMessage());
+        return new AiUnavailableException(MessageConstant.AI_UNAVAILABLE);
     }
 }
