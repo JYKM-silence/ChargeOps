@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend · test (MySQL 8.4 + Redis 7.4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: "123456"
+          MYSQL_DATABASE: chargeops
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -p123456"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      MAVEN_OPTS: "-Dfile.encoding=UTF-8"
+      TZ: Asia/Shanghai
+      # 测试里的 application.properties 关掉了 Flyway（本机测试库假设表已存在）。
+      # CI 是空库，必须让 Flyway 从 V1 跑到最新的 V6；环境变量优先级高于配置文件。
+      SPRING_FLYWAY_ENABLED: "true"
+      CHARGE_OPS_DB_HOST: 127.0.0.1
+      CHARGE_OPS_DB_PORT: "3306"
+      CHARGE_OPS_DB_NAME: chargeops
+      CHARGE_OPS_DB_USERNAME: root
+      CHARGE_OPS_DB_PASSWORD: "123456"
+      CHARGE_OPS_REDIS_HOST: 127.0.0.1
+      CHARGE_OPS_REDIS_PORT: "6379"
+      CHARGE_OPS_REDIS_PASSWORD: "123456"
+      CHARGE_OPS_REDIS_DB: "1"
+      # AI 的两个依赖在 CI 里不启动：测试不调模型，向量库是 @Lazy 的，
+      # 没有 pgvector / Ollama 时 AI 测试照样跑（KnowledgeBaseServiceImplTest
+      # 用的是假 ObjectProvider，不连 PG）。
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Redis service 容器不支持自定义 command，所以用一步 docker run 起；
+      # 密码必须和 application-dev.yml 的默认值一致，否则 Lettuce 会 NOAUTH。
+      - name: Start Redis
+        run: |
+          docker run -d --name redis -p 6379:6379 redis:7.4 redis-server --requirepass 123456
+          until docker exec redis redis-cli -a 123456 ping 2>/dev/null | grep -q PONG; do
+            sleep 1
+          done
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Run tests
+        run: mvn -B -ntp test
+
+  web:
+    name: Web · typecheck + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
